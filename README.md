@@ -121,6 +121,19 @@ Desktop  <->  GitHub  <->  Laptop
 `tr_id=VTTC8908R`/`TTTC8908R`)로 매수가능금액/수량을 조회합니다. 계좌번호는
 8자리(CANO)만 입력해도 상품코드 `01`(표준 주식계좌)이 자동으로 붙습니다.
 
+## Telegram
+
+`telegram/notifier.TelegramNotifier.send_message()`가 Telegram Bot HTTP API
+(`sendMessage`)를 직접 호출합니다. Bot 생성/토큰 발급:
+
+1. Telegram에서 **@BotFather** → `/newbot` → 토큰 발급 (`TELEGRAM_BOT_TOKEN`)
+2. 만든 봇에게 아무 메시지나 먼저 보내기 (봇이 나에게 먼저 말 걸 수 없음)
+3. `https://api.telegram.org/bot<TOKEN>/getUpdates`에서 `chat.id` 확인 (`TELEGRAM_CHAT_ID`)
+
+결정/체결/거부 알림용 메시지 템플릿(섹션 10)은 `models.decision`/`models.order`가
+실제로 생기는 Phase 5 이후에 추가합니다 -- 아직 없는 데이터 모양을 미리 짐작해서
+만들지 않습니다.
+
 ### 모의투자 ↔ 실전투자 전환
 
 `.env`에 `KIS_PAPER_*`와 `KIS_REAL_*` 두 칸이 모두 있습니다. **정확히 한쪽만
@@ -158,7 +171,7 @@ Desktop  <->  GitHub  <->  Laptop
 | 1 | GitHub Repository 및 프로젝트 기본 구조 (완료) |
 | 2 | KIS 모의투자 인증 및 현재가 조회 (완료, 실 서버 검증 완료) |
 | 3 | 잔고 / 보유종목 / 주문가능금액 조회 (완료, 실 서버 검증 완료) |
-| 4 | Telegram 알림 |
+| 4 | Telegram 알림 (완료, 실제 메시지 발송 검증 완료) |
 | 5 | AI structured decision |
 | 6 | Risk Manager |
 | 7 | 모의 BUY / SELL |

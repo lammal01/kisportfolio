@@ -5,6 +5,20 @@
 
 ---
 
+## 2026-09-23 -- Phase 4 완료: Telegram 알림
+
+- `telegram/notifier.py`: `TelegramNotifier.send_message()`가 Telegram
+  Bot HTTP API(`sendMessage`)를 `requests`로 직접 호출 (python-telegram-bot
+  라이브러리 미사용, Phase 1의 `telegram/` 폴더명 충돌 결정과 일관됨).
+  실패 시 `TelegramError`를 던지며, 이후 Phase에서 알림 실패가 매매 로직을
+  막지 않도록 호출부에서 이 예외를 잡아야 함(섹션 13: Telegram 오류는 로그만).
+- 결정/체결/거부용 메시지 템플릿(섹션 10)은 아직 안 만듦 -- `models.decision`/
+  `models.order`가 실제로 생기는 Phase 5+ 에서 추가 (미리 모양 짐작 안 함).
+- 사용자가 BotFather로 봇을 만들고 `.env`에 `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`
+  입력 -> 실제 메시지 발송 테스트 -> 사용자가 수신 확인.
+- 테스트 4개 추가(mock 기반), 전체 17/17 통과.
+- **Phase 4 종료.** 다음은 PHASE 5 (AI structured decision).
+
 ## 2026-09-23 -- Phase 3 완료: 잔고 / 보유종목 / 매수가능금액 조회
 
 - `broker/kis_client.py`에 `get_balance()` (`/trading/inquire-balance`,
