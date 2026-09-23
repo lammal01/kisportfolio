@@ -149,7 +149,37 @@ Desktop  <->  GitHub  <->  Laptop
 키가 필요합니다 (Claude Code 로그인과는 별개, 자체 결제/크레딧 필요).
 
 AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출력은 항상
-`risk.risk_manager`(Phase 6, 아직 미구현)를 거쳐야 합니다.
+`risk.risk_manager`를 거쳐야 합니다.
+
+## Risk Manager
+
+`risk.risk_manager.RiskManager`가 AI의 `Decision`을 실행 가능 여부로 바꾸는
+유일한 경로입니다. AI 출력(`confidence`/`risk_score`)은 신뢰하지 않고, 오직
+호출자가 넘기는 `AccountState`(계좌 총평가금액/당일 시작 평가금액/현재가/
+보유수량)와 아래 결정론적 한도만으로 승인·거부합니다.
+
+- **포지션 크기 한도:** 1회 BUY 주문금액이 계좌 총평가금액의
+  `RISK_MAX_POSITION_PCT`(기본 10%)를 넘으면 거부.
+- **일일 손실 한도:** 당일 평가금액이 장 시작 대비 `RISK_DAILY_LOSS_LIMIT_PCT`
+  (기본 3%) 이상 하락하면 그날 신규 BUY를 전면 차단 (기존 보유분 정리를 위한
+  SELL은 계속 허용).
+- **중복 주문 방지:** `decision_id` 기준 1회성 실행만 허용 -- 같은
+  `decision_id`로 두 번째 `evaluate()`를 호출하면 거부. 승인만 되고 실제
+  실행은 안 된 경우까지 영구 차단하지 않도록, 기록은 평가 시점이 아니라
+  `order_executor`가 주문을 실제로 제출한 뒤 `mark_executed()`를 호출한
+  시점에 남습니다.
+- **비상 정지:** `engage_emergency_stop(reason)` 호출 시 그 뒤의 모든 주문을
+  즉시 차단. 코드가 스스로 풀지 않고 `disengage_emergency_stop()`을 명시적으로
+  호출해야만 해제됩니다.
+
+한도값은 코드를 건드리지 않고 `.env`의 `RISK_MAX_POSITION_PCT` /
+`RISK_DAILY_LOSS_LIMIT_PCT`로 조정합니다.
+
+`RiskManager`는 KIS API를 직접 호출하지 않습니다 -- `AccountState`를 채우는
+것은 호출자(Phase 7 주문 흐름)의 몫이며, `day_start_equity`의 영속 저장은
+아직 없어 프로세스가 재시작되면 초기화됩니다 (Phase 9 Trade Memory에서
+영속화할 예정). 이 모듈을 우회해 `broker.order_executor`를 직접 호출하는
+경로는 존재해서는 안 됩니다.
 
 ### 모의투자 ↔ 실전투자 전환
 
@@ -190,7 +220,7 @@ AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출�
 | 3 | 잔고 / 보유종목 / 주문가능금액 조회 (완료, 실 서버 검증 완료) |
 | 4 | Telegram 알림 (완료, 실제 메시지 발송 검증 완료) |
 | 5 | AI structured decision (완료, Claude API 실제 호출 검증 완료) |
-| 6 | Risk Manager |
+| 6 | Risk Manager (완료, 단위 테스트로 검증 -- 실제 주문 경로 연결은 Phase 7) |
 | 7 | 모의 BUY / SELL |
 | 8 | 주문/체결 확인 및 중복주문 방지 |
 | 9 | Trade Memory |

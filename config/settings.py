@@ -50,6 +50,15 @@ class Settings:
     telegram_bot_token: str | None = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN"))
     telegram_chat_id: str | None = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID"))
 
+    # risk.risk_manager limits -- deliberately conservative defaults; tune
+    # via .env, never by editing risk_manager.py itself.
+    risk_max_position_pct: float = field(
+        default_factory=lambda: float(os.getenv("RISK_MAX_POSITION_PCT") or "0.10")
+    )
+    risk_daily_loss_limit_pct: float = field(
+        default_factory=lambda: float(os.getenv("RISK_DAILY_LOSS_LIMIT_PCT") or "0.03")
+    )
+
     def has_paper_credentials(self) -> bool:
         return bool(self.kis_paper_app_key and self.kis_paper_app_secret and self.kis_paper_account_no)
 

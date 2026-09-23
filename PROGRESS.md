@@ -5,6 +5,35 @@
 
 ---
 
+## 2026-09-23 -- Phase 6 완료: Risk Manager
+
+- **한도값 확인 (사용자 결정):** 코드에 임의로 숫자를 넣지 않고 먼저 질문 ->
+  포지션 크기는 계좌 평가금액의 N%(기본 10%, `.env`로 조정), 일일 손실
+  한도는 N% 초과 시 그날 신규 BUY 전면 차단(SELL은 허용, 기본 3%), 중복
+  주문 방지는 시간 기반 쿨다운이 아니라 `decision_id` 기준 1회성 실행만
+  허용하는 방식으로 결정.
+- `risk/risk_manager.py`: `RiskManager.evaluate(decision, decision_id,
+  account)` -- AI의 `confidence`/`risk_score`는 신뢰하지 않고
+  `AccountState`(총평가금액/당일 시작 평가금액/현재가/보유수량)와
+  `RiskLimits`만으로 승인/거부. HOLD는 항상 거부, SELL은 보유수량 초과 시
+  거부, BUY는 포지션 한도·일일 손실 한도 체크. `engage_emergency_stop()`/
+  `disengage_emergency_stop()`으로 비상 정지 추가 (코드가 스스로 풀지 않음).
+  `mark_executed()`는 평가 시점이 아니라 `order_executor`가 실제로 주문을
+  제출한 뒤에만 호출하도록 분리 -- 승인만 되고 미실행된 주문까지 중복으로
+  오인해 영구 차단하지 않기 위함.
+- `config/settings.py`에 `risk_max_position_pct`/`risk_daily_loss_limit_pct`
+  추가 (`.env`의 `RISK_MAX_POSITION_PCT`/`RISK_DAILY_LOSS_LIMIT_PCT`, 기본값
+  0.10/0.03). `.env.example`에 설명과 함께 추가.
+- **범위 노트:** `RiskManager`는 KIS API를 직접 호출하지 않고
+  `AccountState`를 그대로 받는 순수 로직 -- 실제 계좌 상태를 채워 넘기는
+  일은 Phase 7(주문 흐름)의 몫. `day_start_equity` 영속 저장은 아직 없어
+  프로세스 재시작 시 초기화됨 (Phase 9 Trade Memory에서 영속화 예정).
+- 테스트 14개 추가(position/daily-loss/duplicate/emergency-stop/경계값 등),
+  전체 53/53 통과 (order_executor 자리는 여전히 skip, Phase 7/8 몫).
+- **Phase 6 종료.** 다음은 PHASE 7 (모의 BUY / SELL) -- `RiskManager`가
+  승인한 주문만 `broker/order_executor.py`에서 실제 KIS 주문 API를 호출하게
+  연결.
+
 ## 2026-09-23 -- Phase 5 완료: AI structured decision (OpenAI -> Claude API로 변경)
 
 - **결정 사항 (사용자 요청):** 원래 스펙(섹션 2)은 OpenAI API였지만, 사용자가
@@ -129,6 +158,6 @@
 
 ## 다음에 할 일 (Pending)
 
-- 사용자가 `.env`의 `KIS_PAPER_APP_KEY/APP_SECRET/ACCOUNT_NO`를 채우면, 실제
-  KIS 모의투자 서버로 현재가 조회를 1회 호출해 Phase 2를 최종 검증할 것.
-- PHASE 3: 잔고 / 보유종목 / 주문가능금액 조회.
+- PHASE 7: 모의 BUY / SELL -- `broker/order_executor.py` 구현, `RiskManager`가
+  승인한 주문만 KIS 주문 API로 전달. `models/order.py`의 Order/Fill 모델도
+  이때 함께 정의 (Phase 8과 겹치는 부분은 실제로 필요해질 때 결정).
