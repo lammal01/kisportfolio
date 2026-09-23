@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-09-23 -- Phase 3 완료: 잔고 / 보유종목 / 매수가능금액 조회
+
+- `broker/kis_client.py`에 `get_balance()` (`/trading/inquire-balance`,
+  `tr_id=VTTC8434R`/`TTTC8434R`)와 `get_buying_power()`
+  (`/trading/inquire-psbl-order`, `tr_id=VTTC8908R`/`TTTC8908R`) 추가.
+  `market/data_collector.py`에 대응 래퍼 추가.
+- `get_balance()`는 보유수량 0인 항목(당일 전량매도 등)을 필터링해서
+  `holdings`로, 계좌 요약(예수금/평가금액 등)을 `summary`로 분리 반환.
+- **버그 발견/수정:** 계좌번호를 8+2(10자리)로만 파싱하도록 만들었는데
+  사용자가 실제로 가진 건 8자리 CANO뿐이었음 (`********`). KIS 표준
+  주식계좌 상품코드 `01`을 기본값으로 써서 8자리만 와도 동작하도록 수정.
+- 실제 모의투자 계좌로 검증: 예수금 9,997,251원, 보유종목 0개, 삼성전자
+  매수가능금액 9,995,841원(27주, 미수 없음) / 최대 49,986,255원(139주).
+- 테스트 13개(신규 5개 포함) 전부 mock 기반으로 통과.
+- **Phase 3 종료.** 다음은 PHASE 4 (Telegram 알림).
+
 ## 2026-09-23 -- Phase 2 완료: 실제 KIS 모의투자 서버로 검증
 
 - 사용자가 `.env`에 `KIS_PAPER_APP_KEY/APP_SECRET/ACCOUNT_NO`를 채운 뒤,

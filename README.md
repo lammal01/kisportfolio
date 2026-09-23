@@ -115,6 +115,12 @@ Desktop  <->  GitHub  <->  Laptop
 토큰은 재발급 시마다 카카오톡 알림이 발송되므로 `.kis_token_cache.json`
 (gitignored)에 캐시해 만료 직전까지 재사용합니다.
 
+**Phase 3 구현 범위:** 주식잔고조회(`/uapi/domestic-stock/v1/trading/inquire-balance`,
+`tr_id=VTTC8434R`/`TTTC8434R`)로 보유종목(수량 0 제외)과 계좌 요약(예수금/평가금액)을,
+매수가능조회(`/uapi/domestic-stock/v1/trading/inquire-psbl-order`,
+`tr_id=VTTC8908R`/`TTTC8908R`)로 매수가능금액/수량을 조회합니다. 계좌번호는
+8자리(CANO)만 입력해도 상품코드 `01`(표준 주식계좌)이 자동으로 붙습니다.
+
 ### 모의투자 ↔ 실전투자 전환
 
 `.env`에 `KIS_PAPER_*`와 `KIS_REAL_*` 두 칸이 모두 있습니다. **정확히 한쪽만
@@ -150,8 +156,8 @@ Desktop  <->  GitHub  <->  Laptop
 | Phase | 내용 |
 |---|---|
 | 1 | GitHub Repository 및 프로젝트 기본 구조 (완료) |
-| 2 | KIS 모의투자 인증 및 현재가 조회 (구현/테스트 완료, 실제 자격증명으로 검증 대기) |
-| 3 | 잔고 / 보유종목 / 주문가능금액 조회 |
+| 2 | KIS 모의투자 인증 및 현재가 조회 (완료, 실 서버 검증 완료) |
+| 3 | 잔고 / 보유종목 / 주문가능금액 조회 (완료, 실 서버 검증 완료) |
 | 4 | Telegram 알림 |
 | 5 | AI structured decision |
 | 6 | Risk Manager |
