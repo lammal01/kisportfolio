@@ -1,5 +1,6 @@
 # Secrets
 .env
+.kis_token_cache.json
 
 # Python
 __pycache__/

@@ -100,10 +100,17 @@ Desktop  <->  GitHub  <->  Laptop
 
 ## KIS 공식 Toolkit
 
-한국투자증권 공식 `open-trading-api` 툴킷은 PyPI 패키지가 아니라 별도 GitHub
-저장소입니다. Phase 2에서 실제 인증/조회를 구현할 때 서브모듈 또는 vendoring
-방식으로 가져올지 결정합니다. 가능하면 공식 구현/샘플을 우선 재사용하고,
-이미 제공되는 기능을 처음부터 재구현하지 않습니다.
+한국투자증권 공식 `open-trading-api` 저장소(https://github.com/koreainvestment/open-trading-api)의
+`examples_user/kis_auth.py`, `examples_user/domestic_stock/domestic_stock_functions.py`를
+참고해 엔드포인트/`tr_id`/응답 스키마(`rt_cd`, `output` 등)를 그대로 따르되,
+`broker/kis_client.py`는 pandas/pycryptodome 등 무거운 의존성 없이 `requests`만으로
+최소 구현했습니다. 참고: 이 공식 저장소에는 `KIS Trading MCP` / `KIS Code Assistant MCP`도
+포함되어 있어 (섹션 17), 추후 MCP 연동 시 별도 설치 없이 이 저장소를 그대로 쓸 수 있습니다.
+
+**Phase 2 구현 범위:** OAuth 토큰 발급/캐싱(`/oauth2/tokenP`), 현재가 조회
+(`/uapi/domestic-stock/v1/quotations/inquire-price`, `tr_id=FHKST01010100`).
+토큰은 재발급 시마다 카카오톡 알림이 발송되므로 `.kis_token_cache.json`
+(gitignored)에 캐시해 만료 직전까지 재사용합니다.
 
 ## 보안
 
@@ -120,8 +127,8 @@ Desktop  <->  GitHub  <->  Laptop
 
 | Phase | 내용 |
 |---|---|
-| 1 | GitHub Repository 및 프로젝트 기본 구조 (현재) |
-| 2 | KIS 모의투자 인증 및 현재가 조회 |
+| 1 | GitHub Repository 및 프로젝트 기본 구조 (완료) |
+| 2 | KIS 모의투자 인증 및 현재가 조회 (구현/테스트 완료, 실제 자격증명으로 검증 대기) |
 | 3 | 잔고 / 보유종목 / 주문가능금액 조회 |
 | 4 | Telegram 알림 |
 | 5 | AI structured decision |
