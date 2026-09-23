@@ -5,6 +5,15 @@
 
 ---
 
+## 2026-09-23 -- Phase 2 완료: 실제 KIS 모의투자 서버로 검증
+
+- 사용자가 `.env`에 `KIS_PAPER_APP_KEY/APP_SECRET/ACCOUNT_NO`를 채운 뒤,
+  실제 KIS 모의투자 서버(`openapivts.koreainvestment.com`)로 토큰 발급 +
+  삼성전자(005930) 현재가 조회를 실행 -> 성공 (`stck_prpr=282000`).
+- `KisClient.environment == "paper"`로 정상 감지됨. 토큰은
+  `.kis_token_cache.json`에 캐시됨 (gitignored).
+- **Phase 2 종료.** 다음은 PHASE 3 (잔고/보유종목/주문가능금액 조회).
+
 ## 2026-09-23 -- Phase 2: KIS 모의/실전 자격증명 분리
 
 - `.env`에 `KIS_PAPER_APP_KEY/APP_SECRET/ACCOUNT_NO`와
