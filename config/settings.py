@@ -1,43 +1,77 @@
 """Centralized application settings loaded from environment variables (.env).
 
-Fail-closed defaults: PAPER_TRADING is true unless explicitly overridden,
-and any missing broker credential should be treated as "trading disabled"
-by callers, not silently ignored.
+Fail-closed by design: which KIS environment (모의투자/paper vs 실전투자/real)
+is active is derived automatically from which credential set is filled in --
+never from a manually-flipped flag that could be left in the wrong state.
+Exactly one of the two credential sets must be complete; anything else
+(neither set complete, or both at once) is refused rather than guessed.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import Literal
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
+KisEnvironment = Literal["paper", "real"]
 
-def _get_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+class KisCredentialError(RuntimeError):
+    """Raised when the paper/real KIS credential sets are missing or ambiguous."""
 
 
 @dataclass(frozen=True)
 class Settings:
     openai_api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
 
-    kis_app_key: str | None = field(default_factory=lambda: os.getenv("KIS_APP_KEY"))
-    kis_app_secret: str | None = field(default_factory=lambda: os.getenv("KIS_APP_SECRET"))
-    kis_account_no: str | None = field(default_factory=lambda: os.getenv("KIS_ACCOUNT_NO"))
+    # 모의투자(paper trading) app key/secret/account. Fill only these to run
+    # against the KIS paper trading server.
+    kis_paper_app_key: str | None = field(default_factory=lambda: os.getenv("KIS_PAPER_APP_KEY"))
+    kis_paper_app_secret: str | None = field(default_factory=lambda: os.getenv("KIS_PAPER_APP_SECRET"))
+    kis_paper_account_no: str | None = field(default_factory=lambda: os.getenv("KIS_PAPER_ACCOUNT_NO"))
+
+    # 실전투자(real trading) app key/secret/account. Filling these in (with
+    # the paper set removed/blank) switches the whole app to real trading --
+    # no code change needed, so treat this section of .env with care.
+    kis_real_app_key: str | None = field(default_factory=lambda: os.getenv("KIS_REAL_APP_KEY"))
+    kis_real_app_secret: str | None = field(default_factory=lambda: os.getenv("KIS_REAL_APP_SECRET"))
+    kis_real_account_no: str | None = field(default_factory=lambda: os.getenv("KIS_REAL_ACCOUNT_NO"))
 
     telegram_bot_token: str | None = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN"))
     telegram_chat_id: str | None = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID"))
 
-    # Fail-closed: real order execution must never be enabled by default.
-    paper_trading: bool = field(default_factory=lambda: _get_bool("PAPER_TRADING", True))
+    def has_paper_credentials(self) -> bool:
+        return bool(self.kis_paper_app_key and self.kis_paper_app_secret and self.kis_paper_account_no)
 
-    def has_kis_credentials(self) -> bool:
-        return bool(self.kis_app_key and self.kis_app_secret and self.kis_account_no)
+    def has_real_credentials(self) -> bool:
+        return bool(self.kis_real_app_key and self.kis_real_app_secret and self.kis_real_account_no)
+
+    def resolve_kis_credentials(self) -> tuple[str, str, str, KisEnvironment]:
+        """Returns (app_key, app_secret, account_no, environment).
+
+        Fail-closed: raises KisCredentialError unless exactly one of the two
+        credential sets (paper / real) is fully filled in.
+        """
+        has_paper = self.has_paper_credentials()
+        has_real = self.has_real_credentials()
+
+        if has_paper and has_real:
+            raise KisCredentialError(
+                "Both KIS_PAPER_* and KIS_REAL_* credentials are set -- refusing to guess "
+                "which environment to trade in. Fill in exactly one set (leave the other blank)."
+            )
+        if has_paper:
+            return self.kis_paper_app_key, self.kis_paper_app_secret, self.kis_paper_account_no, "paper"
+        if has_real:
+            return self.kis_real_app_key, self.kis_real_app_secret, self.kis_real_account_no, "real"
+        raise KisCredentialError(
+            "No complete KIS credential set found. Fill in KIS_PAPER_APP_KEY/APP_SECRET/ACCOUNT_NO "
+            "(모의투자) or KIS_REAL_APP_KEY/APP_SECRET/ACCOUNT_NO (실전투자) in .env."
+        )
 
 
 def get_settings() -> Settings:

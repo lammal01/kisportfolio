@@ -3,8 +3,11 @@
 AI가 한국투자증권(KIS) 시장 데이터를 관찰·분석해 BUY/SELL/HOLD를 판단하고,
 **독립적인 Risk Manager 검증을 통과한 주문만** 실제로 실행하는 자동매매 시스템.
 
-> ⚠️ 이 저장소는 기본적으로 `PAPER_TRADING=true` (모의투자) 상태로만 동작해야 합니다.
-> 실전 거래는 아래 Phase 로드맵의 각 단계가 충분히 검증된 뒤에만 활성화합니다.
+> ⚠️ `.env`는 항상 `KIS_PAPER_*` (모의투자)만 채운 상태로 시작해야 합니다.
+> `KIS_REAL_*` (실전투자)는 아래 Phase 로드맵의 각 단계가 충분히 검증된 뒤에만 채웁니다.
+> 자세한 전환 방법은 "모의투자 ↔ 실전투자 전환" 절 참고.
+
+작업 진행 기록은 [`PROGRESS.md`](./PROGRESS.md)에서 확인할 수 있습니다.
 
 ## 아키텍처
 
@@ -111,6 +114,25 @@ Desktop  <->  GitHub  <->  Laptop
 (`/uapi/domestic-stock/v1/quotations/inquire-price`, `tr_id=FHKST01010100`).
 토큰은 재발급 시마다 카카오톡 알림이 발송되므로 `.kis_token_cache.json`
 (gitignored)에 캐시해 만료 직전까지 재사용합니다.
+
+### 모의투자 ↔ 실전투자 전환
+
+`.env`에 `KIS_PAPER_*`와 `KIS_REAL_*` 두 칸이 모두 있습니다. **정확히 한쪽만
+채워야** 하며, 어느 쪽이 채워져 있는지에 따라 `config/settings.py`가 자동으로
+서버(모의/실전)를 결정합니다 (`Settings.resolve_kis_credentials`).
+
+- 처음엔 `KIS_PAPER_APP_KEY/APP_SECRET/ACCOUNT_NO`만 채워서 모의투자로 검증합니다.
+- 이후 실전 전환 시엔 **코드를 건드릴 필요 없이** `KIS_PAPER_*`를 비우고
+  `KIS_REAL_*`를 채우기만 하면 됩니다.
+- 두 세트를 동시에 채우거나 둘 다 비워두면 fail-closed로 에러를 던집니다
+  (어느 쪽인지 추측하지 않음).
+
+⚠️ 이 전환 스위치는 **현재가 조회에만** 적용됩니다. 실제 매수/매도 주문
+(`broker/order_executor.py`)과 그 앞단의 Risk Manager(`risk/risk_manager.py`)는
+아직 구현되지 않았으므로, `KIS_REAL_*`를 채워도 지금은 주문이 실행될 방법
+자체가 없습니다. Phase 6~8에서 주문 경로가 만들어질 때도 이 환경 감지 로직을
+그대로 재사용하되, 실전 주문 활성화는 Phase 11(장시간 Paper Trading 검증)
+이후로 별도 안전장치와 함께 다룹니다.
 
 ## 보안
 

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import requests
 
-from config.settings import Settings, get_settings
+from config.settings import KisCredentialError, KisEnvironment, Settings, get_settings
 
 _PAPER_BASE_URL = "https://openapivts.koreainvestment.com:29443"
 _REAL_BASE_URL = "https://openapi.koreainvestment.com:9443"
@@ -47,19 +47,38 @@ class _CachedToken:
 
 
 class KisClient:
-    """Thin REST client. One instance per (paper/real) environment."""
+    """Thin REST client.
+
+    Which environment (paper/real) this talks to is resolved once, at
+    construction time, from whichever KIS_PAPER_*/KIS_REAL_* credential set
+    is fully filled in -- see config.settings.Settings.resolve_kis_credentials.
+    Swapping environments is purely a .env change; no code path here reads a
+    manual "which mode am I in" flag.
+    """
 
     def __init__(self, settings: Settings | None = None):
-        self._settings = settings or get_settings()
-        if not (self._settings.kis_app_key and self._settings.kis_app_secret):
-            raise KisApiError(
-                "KIS_APP_KEY / KIS_APP_SECRET is missing -- refusing to call the KIS API "
-                "(fail-closed: no credentials means no requests)."
-            )
+        settings = settings or get_settings()
+        try:
+            app_key, app_secret, account_no, environment = settings.resolve_kis_credentials()
+        except KisCredentialError as exc:
+            raise KisApiError(str(exc)) from exc
+
+        self._app_key = app_key
+        self._app_secret = app_secret
+        self._account_no = account_no
+        self._environment: KisEnvironment = environment
+
+    @property
+    def environment(self) -> KisEnvironment:
+        return self._environment
+
+    @property
+    def is_real_trading(self) -> bool:
+        return self._environment == "real"
 
     @property
     def base_url(self) -> str:
-        return _PAPER_BASE_URL if self._settings.paper_trading else _REAL_BASE_URL
+        return _REAL_BASE_URL if self._environment == "real" else _PAPER_BASE_URL
 
     def _read_cached_token(self) -> _CachedToken | None:
         if not _TOKEN_CACHE_PATH.exists():
@@ -97,8 +116,8 @@ class KisClient:
             f"{self.base_url}/oauth2/tokenP",
             json={
                 "grant_type": "client_credentials",
-                "appkey": self._settings.kis_app_key,
-                "appsecret": self._settings.kis_app_secret,
+                "appkey": self._app_key,
+                "appsecret": self._app_secret,
             },
             headers={"Content-Type": "application/json; charset=utf-8"},
             timeout=10,
@@ -121,8 +140,8 @@ class KisClient:
         return {
             "Content-Type": "application/json; charset=utf-8",
             "authorization": f"Bearer {self.get_access_token()}",
-            "appkey": self._settings.kis_app_key,
-            "appsecret": self._settings.kis_app_secret,
+            "appkey": self._app_key,
+            "appsecret": self._app_secret,
             "tr_id": tr_id,
             "custtype": "P",
         }

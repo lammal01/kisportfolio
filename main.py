@@ -7,12 +7,17 @@ phase up to it has been validated (see README Phase roadmap).
 
 from __future__ import annotations
 
-from config.settings import get_settings
+from config.settings import KisCredentialError, get_settings
 
 
 def main() -> None:
     settings = get_settings()
-    print(f"KIS AI Trading Agent -- PAPER_TRADING={settings.paper_trading}")
+    try:
+        _, _, _, environment = settings.resolve_kis_credentials()
+        label = "실전투자 (REAL MONEY)" if environment == "real" else "모의투자 (paper)"
+        print(f"KIS AI Trading Agent -- environment={environment} ({label})")
+    except KisCredentialError as exc:
+        print(f"KIS AI Trading Agent -- no KIS environment configured yet: {exc}")
 
 
 if __name__ == "__main__":

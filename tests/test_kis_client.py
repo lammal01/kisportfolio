@@ -15,10 +15,25 @@ from config.settings import Settings
 
 def _settings(**overrides) -> Settings:
     defaults = dict(
-        kis_app_key="test-app-key",
-        kis_app_secret="test-app-secret",
-        kis_account_no="12345678-01",
-        paper_trading=True,
+        kis_paper_app_key="test-paper-app-key",
+        kis_paper_app_secret="test-paper-app-secret",
+        kis_paper_account_no="12345678-01",
+        kis_real_app_key=None,
+        kis_real_app_secret=None,
+        kis_real_account_no=None,
+    )
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+def _real_settings(**overrides) -> Settings:
+    defaults = dict(
+        kis_paper_app_key=None,
+        kis_paper_app_secret=None,
+        kis_paper_account_no=None,
+        kis_real_app_key="test-real-app-key",
+        kis_real_app_secret="test-real-app-secret",
+        kis_real_account_no="87654321-01",
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -39,18 +54,32 @@ def _isolated_token_cache(tmp_path, monkeypatch):
     monkeypatch.setattr("broker.kis_client._TOKEN_CACHE_PATH", tmp_path / "kis_token_cache.json")
 
 
-def test_missing_credentials_fails_closed():
+def test_no_credentials_fails_closed():
     with pytest.raises(KisApiError):
-        KisClient(settings=_settings(kis_app_key=None, kis_app_secret=None))
+        KisClient(settings=Settings(kis_paper_app_key=None, kis_real_app_key=None))
 
 
-def test_uses_paper_trading_base_url_by_default():
-    client = KisClient(settings=_settings(paper_trading=True))
+def test_both_paper_and_real_credentials_fails_closed():
+    both = _settings(
+        kis_real_app_key="test-real-app-key",
+        kis_real_app_secret="test-real-app-secret",
+        kis_real_account_no="87654321-01",
+    )
+    with pytest.raises(KisApiError):
+        KisClient(settings=both)
+
+
+def test_paper_credentials_select_paper_base_url():
+    client = KisClient(settings=_settings())
+    assert client.environment == "paper"
+    assert client.is_real_trading is False
     assert client.base_url == "https://openapivts.koreainvestment.com:29443"
 
 
-def test_uses_real_base_url_when_paper_trading_disabled():
-    client = KisClient(settings=_settings(paper_trading=False))
+def test_real_credentials_select_real_base_url():
+    client = KisClient(settings=_real_settings())
+    assert client.environment == "real"
+    assert client.is_real_trading is True
     assert client.base_url == "https://openapi.koreainvestment.com:9443"
 
 
