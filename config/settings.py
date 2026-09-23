@@ -26,7 +26,13 @@ class KisCredentialError(RuntimeError):
 
 @dataclass(frozen=True)
 class Settings:
-    openai_api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
+    # Claude API (Anthropic) -- used by agents.trading_agent for structured
+    # BUY/SELL/HOLD decisions. Needs its own Console API key (console.anthropic.com),
+    # separate from any Claude Code subscription; never picked up from the
+    # ambient shell/CLI session, to keep credential sourcing explicit like
+    # every other secret in this project.
+    anthropic_api_key: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
+    anthropic_model: str = field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL") or "claude-opus-5")
 
     # 모의투자(paper trading) app key/secret/account. Fill only these to run
     # against the KIS paper trading server.

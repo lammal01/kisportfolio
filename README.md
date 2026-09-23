@@ -134,6 +134,23 @@ Desktop  <->  GitHub  <->  Laptop
 실제로 생기는 Phase 5 이후에 추가합니다 -- 아직 없는 데이터 모양을 미리 짐작해서
 만들지 않습니다.
 
+## AI Trading Agent
+
+**참고: 원래 스펙(섹션 2)은 OpenAI API를 지정했지만, 사용자 요청으로 Claude API
+(Anthropic)로 변경했습니다.** `agents/trading_agent.TradingAgent`가
+`anthropic` SDK의 `client.messages.create(..., output_config={"format":
+{"type": "json_schema", ...}})`로 구조화된 JSON만 반환하도록 강제하고,
+`models/decision.py`의 `Decision.from_dict()`가 그 값을 다시 한번 의미
+검증합니다 (스키마를 통과해도 값 자체가 이상할 수 있으므로 그대로 신뢰하지
+않음). 모델은 기본적으로 `claude-opus-5`, `output_config.effort="low"`로
+호출해 비용을 억제합니다 (섹션 6 비용 최적화 원칙).
+
+`ANTHROPIC_API_KEY`는 console.anthropic.com에서 발급받은 별도의 Console API
+키가 필요합니다 (Claude Code 로그인과는 별개, 자체 결제/크레딧 필요).
+
+AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출력은 항상
+`risk.risk_manager`(Phase 6, 아직 미구현)를 거쳐야 합니다.
+
 ### 모의투자 ↔ 실전투자 전환
 
 `.env`에 `KIS_PAPER_*`와 `KIS_REAL_*` 두 칸이 모두 있습니다. **정확히 한쪽만
@@ -172,7 +189,7 @@ Desktop  <->  GitHub  <->  Laptop
 | 2 | KIS 모의투자 인증 및 현재가 조회 (완료, 실 서버 검증 완료) |
 | 3 | 잔고 / 보유종목 / 주문가능금액 조회 (완료, 실 서버 검증 완료) |
 | 4 | Telegram 알림 (완료, 실제 메시지 발송 검증 완료) |
-| 5 | AI structured decision |
+| 5 | AI structured decision (완료, Claude API 실제 호출 검증 완료) |
 | 6 | Risk Manager |
 | 7 | 모의 BUY / SELL |
 | 8 | 주문/체결 확인 및 중복주문 방지 |

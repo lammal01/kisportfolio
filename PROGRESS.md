@@ -5,6 +5,35 @@
 
 ---
 
+## 2026-09-23 -- Phase 5 완료: AI structured decision (OpenAI -> Claude API로 변경)
+
+- **결정 사항 (사용자 요청):** 원래 스펙(섹션 2)은 OpenAI API였지만, 사용자가
+  OpenAI 계정에 크레딧이 없어 "클로드 콘솔 API로 하면 안되나?"라고 요청 ->
+  `claude-api` 스킬을 로드해 최신 API 모양(`output_config.format` 기반
+  structured output, 모델 ID 등)을 확인한 뒤 OpenAI를 완전히 대체.
+  OpenAI 관련 코드/의존성/`.env` 변수 전부 제거, `anthropic` SDK로 교체.
+  (처음에 OpenAI로 구현했다가 크레딧 문제로 419/429 확인 후 전환한 것이라
+  히스토리에는 OpenAI 버전 커밋도 남아있음.)
+- `models/decision.py`: `Decision`/`Decision.from_dict()` -- action(BUY/SELL/HOLD),
+  symbol, quantity(BUY/SELL은 0 초과 강제), confidence(0~1), reason(비어있지
+  않은 문자열 리스트), 선택 필드(risk_score/stop_loss/take_profit/
+  invalidation_condition) 검증. `DecisionParseError`로 실패 이유 명시.
+- `agents/trading_agent.py`: `TradingAgent.decide()`가 `anthropic` SDK의
+  `client.messages.create(..., output_config={"effort": "low", "format":
+  {"type": "json_schema", ...}})`로 구조화된 JSON을 강제받고, 받은 값도
+  `Decision.from_dict()`로 다시 검증 (스키마 통과 != 값이 맞다는 뜻 아님).
+  기본 모델 `claude-opus-5`, 비용 절감을 위해 `effort="low"`.
+- `ANTHROPIC_API_KEY`를 처음에 사용자가 콘솔에 표시된 축약형(`sk-ant-api03-...`
+  형태, 23자)을 그대로 붙여넣어서 401 발생 -> 길이 확인해서 문제 파악 ->
+  전체 키(108자) 재입력 후 정상 동작.
+- 실제 삼성전자 시세로 라이브 검증: Claude가 데이터 부족을 스스로 인지하고
+  `HOLD`, `confidence=0.55`, 근거에 "추세/이동평균 데이터 없음"을 정확히
+  언급 -- structured output이 의도대로 작동함을 확인.
+- 테스트 17개(decision parser 14개 + trading agent 6개, 기존 skip 스텁 대체)
+  추가, 전체 38/38 통과 (mock 기반, API 키 불필요).
+- **Phase 5 종료.** 다음은 PHASE 6 (Risk Manager) -- 스펙에서 "가장 중요한
+  원칙"으로 강조한 부분이라 특히 신중하게 진행.
+
 ## 2026-09-23 -- Phase 4 완료: Telegram 알림
 
 - `telegram/notifier.py`: `TelegramNotifier.send_message()`가 Telegram
