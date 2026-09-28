@@ -176,9 +176,8 @@ AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출�
 `RISK_DAILY_LOSS_LIMIT_PCT`로 조정합니다.
 
 `RiskManager`는 KIS API를 직접 호출하지 않습니다 -- `AccountState`를 채우는
-것은 호출자(Phase 7 주문 흐름)의 몫이며, `day_start_equity`의 영속 저장은
-아직 없어 프로세스가 재시작되면 초기화됩니다 (Phase 9 Trade Memory에서
-영속화할 예정). 이 모듈을 우회해 `broker.order_executor`를 직접 호출하는
+것은 호출자(`market.data_collector.build_account_state`)의 몫이고, 재시작 후에도
+유지돼야 하는 상태는 `RiskStateStore`(Trade Memory가 구현)를 통해 저장합니다. 이 모듈을 우회해 `broker.order_executor`를 직접 호출하는
 경로는 존재해서는 안 됩니다.
 
 ## Order Executor (Phase 7)
@@ -208,7 +207,7 @@ AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출�
 python main.py --once 005930
 ```
 
-`day_start_equity`는 아직 영속 저장이 없어 실행 시점의 총평가금액을 씁니다 (Phase 9).
+`day_start_equity`는 Trade Memory에 그날 처음 기록된 총평가금액을 씁니다 (Phase 9).
 
 ## 주문/체결 확인 (Phase 8)
 
@@ -232,6 +231,29 @@ python main.py --once 005930
   초과 시 재시도하고, 주문은 절대 재시도하지 않습니다.
 - **호출 간격 제한:** 모의투자 서버는 초당 허용 건수가 낮아 모든 KIS 호출 사이에
   최소 간격(모의 0.5초 / 실전 0.05초)을 둡니다.
+
+## Trade Memory (Phase 9)
+
+`memory.trade_memory.TradeMemory`가 SQLite 파일(`TRADE_DB_PATH`, 기본
+`trade_memory.sqlite3`, gitignored -- PC마다 따로)에 다음을 기록합니다.
+
+- **AI 판단** (`decisions`): 시각/종목/action/수량/confidence/근거 + AI에게 준 시장 스냅샷.
+  주문 전에 기록 -- 기록이 실패하면 주문도 나가지 않습니다.
+- **주문 결과** (`orders`): Risk Manager 거부 포함 모든 `OrderResult`.
+- **체결** (`fills`): 주문번호별 최신 체결 상태. SELL은 매입평균가(`pchs_avg_pric`)
+  기준 실현손익(수수료/세금 제외)도 저장.
+- **당일 시작 평가금액** (`daily_equity`): 그날 처음 기록된 값이 고정 -- 장중에
+  재시작해도 일일 손실 한도 기준이 초기화되지 않습니다.
+- **Risk Manager 상태** (`executed_decisions`, `emergency_stop`): 실행된 `decision_id`와
+  **비상 정지가 재시작 후에도 유지**됩니다. 저장이 실패하면 그 즉시 비상 정지.
+  비상 정지는 사람이 계좌를 확인한 뒤 명시적으로만 해제합니다:
+  ```bash
+  python main.py --release-emergency-stop
+  ```
+  비상 정지 중에는 `--once`가 AI를 호출하지 않고 바로 건너뜁니다 (비용 절약).
+
+AI에게는 전체 기록이 아니라 같은 종목의 최근 5건 요약(`recent_trades`: 판단/주문
+상태/체결/실현손익, 원본 스냅샷 제외)만 전달합니다.
 
 ### 모의투자 ↔ 실전투자 전환
 
@@ -274,7 +296,7 @@ python main.py --once 005930
 | 6 | Risk Manager (완료, 단위 테스트로 검증 -- 실제 주문 경로 연결은 Phase 7) |
 | 7 | 모의 BUY / SELL (완료, 실제 모의 매수/매도 검증 완료) |
 | 8 | 주문/체결 확인 및 중복주문 방지 (완료, 실제 모의 주문/타임아웃으로 검증) |
-| 9 | Trade Memory |
+| 9 | Trade Memory (완료, 실제 사이클 기록 검증) |
 | 10 | Telegram Control |
 | 11 | 장시간 Paper Trading |
 | 12 | 백테스트 및 거래 결과 분석 |

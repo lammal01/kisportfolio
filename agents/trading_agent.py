@@ -8,7 +8,7 @@ values (ranges, BUY/SELL quantity > 0, etc), since a schema-conformant
 response can still be semantically wrong. Never trust the shape alone.
 
 This module must never call broker.order_executor directly. Its output
-always passes through risk.risk_manager first (Phase 6, not yet built).
+always passes through risk.risk_manager first.
 
 Cost control (spec section 6): runs at output_config.effort="low" since
 this is a bounded classification-style task, not open-ended reasoning.
@@ -47,7 +47,10 @@ SYSTEM_PROMPT = (
     "Quantity must be 0 for HOLD and a positive integer for BUY/SELL. "
     "confidence is a number between 0 and 1. reason is a short list of the "
     "concrete factors that drove the decision. Do not invent data that "
-    "isn't in the snapshot you were given."
+    "isn't in the snapshot you were given. The snapshot may include "
+    "recent_trades: your own last few decisions on this symbol and how they "
+    "turned out (order status, fill, realized_pnl). Treat them as context "
+    "only -- a past decision is not a reason to repeat it."
 )
 
 

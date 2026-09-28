@@ -5,6 +5,34 @@
 
 ---
 
+## 2026-09-28 -- Phase 9 완료: Trade Memory (SQLite)
+
+- `memory/database.py`: 스키마 -- `decisions`(AI 판단+스냅샷), `orders`(모든
+  OrderResult, Risk 거부 포함), `fills`(주문번호별 최신 체결 상태, SELL 실현손익),
+  `daily_equity`, `executed_decisions`, `emergency_stop`. 표준 라이브러리 `sqlite3`만
+  사용, 파일은 `TRADE_DB_PATH`(기본 `trade_memory.sqlite3`, gitignored, PC별).
+- `memory/trade_memory.py`: `TradeMemory` -- 기록 + `recent_trades(symbol)` (같은
+  종목 최근 5건 요약만, 원본 스냅샷 제외 -> AI 프롬프트용) + `day_start_equity()`
+  (그날 첫 값 고정, 재시작해도 손실 기준 유지).
+- **안전 개선:** 비상 정지가 지금까지 메모리에만 있어서 **재시작하면 풀렸음**
+  (UNKNOWN 주문 뒤 재시작 = 확인 없이 매매 재개). `RiskManager`에
+  `RiskStateStore` 프로토콜을 두고 Trade Memory가 구현 -> 실행된 `decision_id`와
+  비상 정지가 재시작 후에도 유지. 저장 실패 시 예외 대신 즉시 비상 정지(주문 직후일
+  수 있으므로), 로드 실패 시 시작 자체를 거부, 해제는 저장소를 먼저 지워 실패하면
+  정지 유지. 해제는 `python main.py --release-emergency-stop`(사람이 직접)으로만.
+- `AccountState.avg_cost`(매입평균가, 한도 계산엔 미사용) 추가 -> SELL 실현손익
+  기록용.
+- `main.py --once`: 비상 정지 중이면 AI 호출 없이 건너뜀(비용 절약), 판단은 주문
+  **전에** 기록(실패하면 주문 안 나감), 주문/체결 기록 실패는 알림에 경고로 포함.
+  AI 스냅샷에 `recent_trades`/`avg_cost` 추가, 시스템 프롬프트에 "과거 판단은
+  참고일 뿐 반복 이유가 아님" 명시.
+- 라이브 검증: `--once` 2회 -> 두 판단(HOLD) 모두 DB 기록, 당일 시작 평가금액
+  9,998,763원 기록, 두 번째 호출의 AI 입력에 첫 판단이 `recent_trades`로 포함됨.
+- 테스트 17개 추가(재시작 후 decision_id/비상 정지 유지, 저장 실패 시 비상 정지,
+  시작 기준값 고정, 실현손익, run_once 전체 흐름 등), 전체 113/113 통과.
+- **Phase 9 종료.** 다음은 PHASE 10 (Telegram Control -- `/status`, `/balance`,
+  `/pause`, `/resume` 등).
+
 ## 2026-09-28 -- Phase 8 완료: 주문/체결 확인 및 중복주문 방지
 
 - `broker/kis_client.py`: `get_daily_orders()` -- 주식일별주문체결조회
@@ -246,7 +274,8 @@
 
 ## 다음에 할 일 (Pending)
 
-- PHASE 9: Trade Memory -- SQLite에 AI 판단/주문/체결 기록, `day_start_equity`와
-  실행된 `decision_id` 영속화 (현재는 재시작 시 초기화).
+- PHASE 10: Telegram Control -- chat ID whitelist, 조회 명령(`/status`, `/balance`,
+  `/price`), 비상 정지 해제/일시정지 명령 (사람의 명시적 명령으로만).
 - 주문 취소 기능 없음 -- 지정가 주문을 쓰게 되면 미체결 주문이 그날 해당 종목을
   막으므로(open_order_count) 취소 API 필요. 현재는 시장가만 사용.
+- HOLD 판단도 `orders`에 REJECTED_BY_RISK로 기록됨 -- 분석(Phase 12) 때 구분 필요.

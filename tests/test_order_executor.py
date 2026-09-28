@@ -244,7 +244,10 @@ def test_place_order_rejects_invalid_side_and_quantity(paper_client):
 def test_build_account_state_from_kis_responses():
     client = MagicMock(spec=KisClient)
     client.get_balance.return_value = {
-        "holdings": [{"pdno": "005930", "hldg_qty": "4"}, {"pdno": "000660", "hldg_qty": "2"}],
+        "holdings": [
+            {"pdno": "005930", "hldg_qty": "4", "pchs_avg_pric": "68000.5"},
+            {"pdno": "000660", "hldg_qty": "2", "pchs_avg_pric": "150000"},
+        ],
         "summary": {"tot_evlu_amt": "10000000"},
     }
     client.get_current_price.return_value = {"stck_prpr": "70000"}
@@ -264,6 +267,7 @@ def test_build_account_state_from_kis_responses():
         current_price=70_000.0,
         held_quantity=4,
         open_order_count=1,
+        avg_cost=68_000.5,
     )
 
 

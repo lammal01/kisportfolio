@@ -68,9 +68,9 @@ def build_account_state(
             raise ValueError(f"KIS response missing/invalid {key!r}: {source.get(key)!r}") from exc
 
     total_equity = number(balance["summary"], "tot_evlu_amt")
-    held_quantity = sum(
-        int(number(h, "hldg_qty")) for h in balance["holdings"] if h.get("pdno") == symbol
-    )
+    holdings = [h for h in balance["holdings"] if h.get("pdno") == symbol]
+    held_quantity = sum(int(number(h, "hldg_qty")) for h in holdings)
+    avg_cost = number(holdings[0], "pchs_avg_pric") if held_quantity > 0 else None
     return AccountState(
         symbol=symbol,
         total_equity=total_equity,
@@ -78,4 +78,5 @@ def build_account_state(
         current_price=number(price, "stck_prpr"),
         held_quantity=held_quantity,
         open_order_count=open_order_count,
+        avg_cost=avg_cost,
     )

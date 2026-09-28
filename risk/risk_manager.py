@@ -9,14 +9,22 @@ Rejections must be logged with a reason.
 RiskManager does not call the KIS API itself -- callers (market/broker)
 gather account state and pass it in as AccountState, keeping this module
 pure and independently testable without network access.
+
+State that must survive a restart (executed decision_ids, emergency
+stop) goes through an optional RiskStateStore (memory.trade_memory
+implements it) -- loaded at construction, written through on change.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from config.settings import Settings, get_settings
 from models.decision import Decision
+
+logger = logging.getLogger(__name__)
 
 # Conservative defaults; override via RISK_MAX_POSITION_PCT /
 # RISK_DAILY_LOSS_LIMIT_PCT in .env, never by editing these.
@@ -40,6 +48,8 @@ class AccountState:
         거부 -- decision_id 기록은 메모리에만 있어 재시작하면 사라지지만,
         브로커의 미체결 목록은 남으므로 재시작 후에도 주문이 쌓이지 않음.
         None(확인 못 함)이면 거부.
+    avg_cost: 대상 종목 매입평균가 (보유 없으면 None). 한도 계산에는 쓰지
+        않음 -- SELL의 실현손익 기록(memory.trade_memory)용으로 전달만 함.
     """
 
     symbol: str
@@ -48,6 +58,7 @@ class AccountState:
     current_price: float
     held_quantity: int = 0
     open_order_count: int | None = None
+    avg_cost: float | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +82,13 @@ class RiskLimits:
         )
 
 
+class RiskStateStore(Protocol):
+    def load_executed_decision_ids(self) -> set[str]: ...
+    def save_executed_decision_id(self, decision_id: str) -> None: ...
+    def load_emergency_stop(self) -> str | None: ...
+    def save_emergency_stop(self, reason: str | None) -> None: ...
+
+
 class RiskManager:
     """The only path from an AI Decision to an executable order.
 
@@ -80,11 +98,34 @@ class RiskManager:
     through evaluate() and getting approved=True back.
     """
 
-    def __init__(self, limits: RiskLimits | None = None):
+    def __init__(self, limits: RiskLimits | None = None, store: RiskStateStore | None = None):
         self._limits = limits or RiskLimits.from_settings()
+        self._store = store
         self._executed_decision_ids: set[str] = set()
         self._emergency_stop = False
         self._emergency_stop_reason: str | None = None
+        if store is not None:
+            # A load failure propagates: better not to start at all than to
+            # start without knowing about a previous emergency stop.
+            self._executed_decision_ids = set(store.load_executed_decision_ids())
+            reason = store.load_emergency_stop()
+            if reason is not None:
+                self._emergency_stop = True
+                self._emergency_stop_reason = reason
+
+    def _persist(self, action: str, fn, *args) -> None:
+        """Writes state through to the store. A failed write never raises
+        (it can happen right after an order was placed) -- it engages the
+        emergency stop in memory instead, since what's on disk is now
+        behind what actually happened."""
+        if self._store is None:
+            return
+        try:
+            fn(*args)
+        except Exception as exc:
+            logger.error("risk state persistence failed (%s): %s", action, exc)
+            self._emergency_stop = True
+            self._emergency_stop_reason = f"risk state persistence failed ({action}): {exc}"
 
     @property
     def emergency_stop_engaged(self) -> bool:
@@ -97,8 +138,17 @@ class RiskManager:
         silently forgotten by e.g. a process restart re-reading a flag."""
         self._emergency_stop = True
         self._emergency_stop_reason = reason
+        if self._store is not None:
+            self._persist("engage emergency stop", self._store.save_emergency_stop, reason)
+
+    @property
+    def emergency_stop_reason(self) -> str | None:
+        return self._emergency_stop_reason
 
     def disengage_emergency_stop(self) -> None:
+        """Clears the store first: if that fails the stop stays engaged."""
+        if self._store is not None:
+            self._store.save_emergency_stop(None)
         self._emergency_stop = False
         self._emergency_stop_reason = None
 
@@ -174,3 +224,5 @@ class RiskManager:
         approval that never got executed doesn't get permanently locked
         out as a false 'duplicate'."""
         self._executed_decision_ids.add(decision_id)
+        if self._store is not None:
+            self._persist("mark executed", self._store.save_executed_decision_id, decision_id)

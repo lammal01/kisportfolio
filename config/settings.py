@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -57,6 +58,12 @@ class Settings:
     )
     risk_daily_loss_limit_pct: float = field(
         default_factory=lambda: float(os.getenv("RISK_DAILY_LOSS_LIMIT_PCT") or "0.03")
+    )
+
+    # memory.trade_memory SQLite file -- per machine, gitignored.
+    trade_db_path: str = field(
+        default_factory=lambda: os.getenv("TRADE_DB_PATH")
+        or str(Path(__file__).resolve().parent.parent / "trade_memory.sqlite3")
     )
 
     def has_paper_credentials(self) -> bool:
