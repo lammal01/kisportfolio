@@ -14,6 +14,7 @@ about this.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -98,6 +99,13 @@ class KisClient:
         )
 
     @property
+    def _app_key_fingerprint(self) -> str:
+        """Ties a cached token to the app key that issued it, so editing
+        the app key in .env invalidates the cache (the raw key is never
+        written to disk)."""
+        return hashlib.sha256(self._app_key.encode()).hexdigest()[:16]
+
+    @property
     def environment(self) -> KisEnvironment:
         return self._environment
 
@@ -116,6 +124,8 @@ class KisClient:
             data = json.loads(_TOKEN_CACHE_PATH.read_text(encoding="utf-8"))
             if data.get("base_url") != self.base_url:
                 return None
+            if data.get("app_key_fingerprint") != self._app_key_fingerprint:
+                return None
             expires_at = datetime.fromisoformat(data["expires_at"])
         except (json.JSONDecodeError, KeyError, ValueError):
             return None
@@ -128,6 +138,7 @@ class KisClient:
             json.dumps(
                 {
                     "base_url": self.base_url,
+                    "app_key_fingerprint": self._app_key_fingerprint,
                     "access_token": token.access_token,
                     "expires_at": token.expires_at.isoformat(),
                 }

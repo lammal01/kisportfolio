@@ -249,7 +249,7 @@ python main.py --once 005930
 | 4 | Telegram 알림 (완료, 실제 메시지 발송 검증 완료) |
 | 5 | AI structured decision (완료, Claude API 실제 호출 검증 완료) |
 | 6 | Risk Manager (완료, 단위 테스트로 검증 -- 실제 주문 경로 연결은 Phase 7) |
-| 7 | 모의 BUY / SELL (코드/단위 테스트 완료, 실 주문 검증은 KIS 계좌 이슈로 대기) |
+| 7 | 모의 BUY / SELL (완료, 실제 모의 매수/매도 검증 완료) |
 | 8 | 주문/체결 확인 및 중복주문 방지 |
 | 9 | Trade Memory |
 | 10 | Telegram Control |

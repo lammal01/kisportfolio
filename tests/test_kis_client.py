@@ -115,6 +115,18 @@ def test_get_access_token_refetches_once_expired(mock_post):
 
 
 @patch("broker.kis_client.requests.post")
+def test_get_access_token_refetches_when_app_key_changes(mock_post):
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.content = b"{}"
+    mock_post.return_value.json.return_value = _token_response()
+
+    KisClient(settings=_settings()).get_access_token()
+    KisClient(settings=_settings(kis_paper_app_key="another-app-key")).get_access_token()
+
+    assert mock_post.call_count == 2  # old key's token not reused
+
+
+@patch("broker.kis_client.requests.post")
 def test_get_access_token_raises_on_http_error(mock_post):
     mock_post.return_value.status_code = 401
     mock_post.return_value.content = b'{"error_description": "invalid appkey"}'
