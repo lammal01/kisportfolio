@@ -1,7 +1,7 @@
 """Korea Investment & Securities (KIS) Open API client.
 
-OAuth token issuance/caching, 현재가 조회 (Phase 2), and 잔고/보유종목/
-매수가능금액 조회 (Phase 3). Endpoint/tr_id values are taken from the
+OAuth token issuance/caching, 현재가 조회 (Phase 2), 잔고/보유종목/
+매수가능금액 조회 (Phase 3), and 현금 매수/매도 주문 (Phase 7). Endpoint/tr_id values are taken from the
 official open-trading-api examples (examples_user/kis_auth.py and
 examples_user/domestic_stock/domestic_stock_functions.py):
 https://github.com/koreainvestment/open-trading-api
@@ -38,6 +38,12 @@ class KisApiError(RuntimeError):
     def __init__(self, message: str, msg_cd: str | None = None):
         super().__init__(message)
         self.msg_cd = msg_cd
+
+
+class KisOrderUncertainError(KisApiError):
+    """The order request may or may not have reached KIS (timeout, lost
+    or unparseable response). Callers must treat the order as possibly
+    placed -- never retry blindly, or it may be placed twice."""
 
 
 @dataclass(frozen=True)
@@ -252,3 +258,75 @@ class KisClient:
             },
         )
         return body["output"]
+
+    # (environment, side) -> tr_id, from the official order_cash example.
+    _ORDER_TR_IDS = {
+        ("paper", "BUY"): "VTTC0012U",
+        ("paper", "SELL"): "VTTC0011U",
+        ("real", "BUY"): "TTTC0012U",
+        ("real", "SELL"): "TTTC0011U",
+    }
+
+    def place_cash_order(
+        self,
+        side: str,
+        symbol: str,
+        quantity: int,
+        order_division: str = "01",
+        unit_price: str = "0",
+    ) -> dict:
+        """주식주문(현금). Returns KIS's 'output' dict (ODNO/KRX_FWDG_ORD_ORGNO/
+        ORD_TMD) once KIS has accepted the order -- acceptance, not a fill.
+
+        order_division defaults to "01" (시장가, unit_price "0").
+
+        Never retried here. Raises KisApiError when KIS explicitly rejects
+        the order (definitely not placed), and KisOrderUncertainError when
+        the outcome can't be known (possibly placed).
+        """
+        tr_id = self._ORDER_TR_IDS.get((self._environment, side))
+        if tr_id is None:
+            raise ValueError(f"side must be 'BUY' or 'SELL', got {side!r}")
+        if not isinstance(quantity, int) or quantity <= 0:
+            raise ValueError(f"quantity must be a positive integer, got {quantity!r}")
+
+        path = "/uapi/domestic-stock/v1/trading/order-cash"
+        # Built before sending: a token failure here means nothing was sent.
+        headers = self._headers(tr_id=tr_id)
+        try:
+            resp = requests.post(
+                f"{self.base_url}{path}",
+                headers=headers,
+                json={
+                    "CANO": self._cano,
+                    "ACNT_PRDT_CD": self._acnt_prdt_cd,
+                    "PDNO": symbol,
+                    "ORD_DVSN": order_division,
+                    "ORD_QTY": str(quantity),
+                    "ORD_UNPR": unit_price,
+                    "EXCG_ID_DVSN_CD": "KRX",
+                    "SLL_TYPE": "01" if side == "SELL" else "",
+                    "CNDT_PRIC": "",
+                },
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            raise KisOrderUncertainError(f"{path}: no response from KIS ({exc!r})") from exc
+
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise KisOrderUncertainError(
+                f"{path}: unparseable response (HTTP {resp.status_code})"
+            ) from exc
+
+        rt_cd = body.get("rt_cd")
+        if rt_cd is not None and rt_cd != "0":
+            raise KisApiError(f"{path} rejected: {body.get('msg1', body)}", msg_cd=body.get("msg_cd"))
+
+        output = body.get("output") or {}
+        if resp.status_code != 200 or rt_cd != "0" or not output.get("ODNO"):
+            raise KisOrderUncertainError(
+                f"{path}: ambiguous response (HTTP {resp.status_code}): {body}"
+            )
+        return output

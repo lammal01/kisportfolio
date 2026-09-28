@@ -5,6 +5,39 @@
 
 ---
 
+## 2026-09-28 -- Phase 7: 모의 BUY / SELL (코드 완료, 실 주문 검증 대기)
+
+- `broker/order_executor.py`: `OrderExecutor.submit(decision, decision_id,
+  account)`가 주문의 유일한 경로. 내부에서 `RiskManager.evaluate()`를 먼저
+  호출하므로 Risk Manager를 건너뛰는 공개 경로가 없음. 결과는
+  `models/order.py`의 `OrderResult` (`SUBMITTED` / `REJECTED_BY_RISK` /
+  `REJECTED_BY_BROKER` / `UNKNOWN`). `SUBMITTED`는 접수일 뿐 체결 아님(Phase 8).
+- **안전 결정:** 타임아웃/응답 유실/해석 불가 응답은 `UNKNOWN` -> 해당
+  `decision_id` 잠금 + **비상 정지 자동 발동** (주문이 들어갔을 수도 있으므로
+  사람이 확인하기 전까지 추가 주문 금지). 자동 재시도 없음. KIS가 명시적으로
+  거부한 경우만 재시도 허용.
+- **안전 결정:** `OrderExecutor`는 실전 `KisClient`로 생성 시
+  `RealTradingDisabledError` -- `.env`에 `KIS_REAL_*`를 채워도 주문은 안 나감.
+  Phase 11 검증 후 해제 예정.
+- `broker/kis_client.py`: `place_cash_order()` (`order-cash`, 모의
+  `VTTC0012U`/`VTTC0011U`, 실전 `TTTC0012U`/`TTTC0011U`, 기본 시장가). 공식
+  `open-trading-api`의 `order_cash` 예제 기준. `KisOrderUncertainError` 추가.
+- `risk/risk_manager.py`: `AccountState`에 `symbol` 추가, AI 결정의 종목과
+  다르면 거부 (AI가 요청과 다른 종목을 답할 경우 대비).
+- `market/data_collector.py`: `build_account_state(symbol)` -- 실제
+  잔고(`tot_evlu_amt`, 보유수량)/현재가로 `AccountState` 생성. 값이 없으면
+  0으로 채우지 않고 에러.
+- `main.py --once SYMBOL`: 스냅샷 -> AI 판단 -> OrderExecutor -> Telegram
+  한 사이클. 라이브 실행 결과: Claude가 HOLD 판단 -> Risk Manager 거부 ->
+  알림 발송까지 정상 동작.
+- 테스트 17개 추가(타임아웃/응답 유실/중복 decision_id/브로커 거부/실전 차단/
+  종목 불일치 등), 전체 70/70 통과.
+- **블로커:** 실제 모의 주문(삼성전자 1주 시장가 BUY)이 KIS에서
+  `40910000 모의투자 주문이 불가한 계좌입니다`로 거부됨. 장중(10:45, 거래량
+  정상)이고 구/신 tr_id(`VTTC0802U`/`VTTC0012U`) 모두 같은 응답 -> 코드가 아닌
+  계좌 쪽 문제로 판단. 같은 계좌로 잔고 조회는 정상. 사용자가 KIS 홈페이지에서
+  모의투자 신청 상태(기간 만료/재신청)와 앱키에 연결된 모의 계좌번호를 확인해야 함.
+
 ## 2026-09-23 -- Phase 6 완료: Risk Manager
 
 - **한도값 확인 (사용자 결정):** 코드에 임의로 숫자를 넣지 않고 먼저 질문 ->
@@ -158,6 +191,7 @@
 
 ## 다음에 할 일 (Pending)
 
-- PHASE 7: 모의 BUY / SELL -- `broker/order_executor.py` 구현, `RiskManager`가
-  승인한 주문만 KIS 주문 API로 전달. `models/order.py`의 Order/Fill 모델도
-  이때 함께 정의 (Phase 8과 겹치는 부분은 실제로 필요해질 때 결정).
+- PHASE 7 마무리: KIS 모의투자 계좌 상태 확인(사용자) -> 삼성전자 1주 모의
+  BUY/SELL로 `SUBMITTED`까지 실검증.
+- PHASE 8: 주문/체결 확인 -- 접수(ODNO)와 체결을 구분해 조회, `UNKNOWN` 주문의
+  자동 대사(reconciliation) 후 비상 정지 해제 절차.

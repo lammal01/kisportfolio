@@ -26,6 +26,7 @@ def _decision(**overrides) -> Decision:
 
 def _account(**overrides) -> AccountState:
     defaults = dict(
+        symbol="005930",
         total_equity=10_000_000.0,
         day_start_equity=10_000_000.0,
         current_price=70_000.0,
@@ -159,3 +160,10 @@ def test_limits_default_from_settings(monkeypatch):
     limits = RiskLimits.from_settings(get_settings())
     assert limits.max_position_pct == 0.25
     assert limits.daily_loss_limit_pct == 0.05
+
+
+def test_symbol_mismatch_is_rejected():
+    rm = RiskManager(limits=LIMITS)
+    verdict = rm.evaluate(_decision(symbol="000660"), "d1", _account(symbol="005930"))
+    assert not verdict.approved
+    assert "does not match" in verdict.reason

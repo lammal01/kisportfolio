@@ -46,7 +46,7 @@ models/     decision.py                  AI structured output 모델
             order.py                     주문/체결 모델
 config/     settings.py                  .env 기반 설정 (fail-closed)
 tests/      test_risk_manager.py, test_decision_parser.py, test_order_executor.py
-main.py     엔트리 포인트 (Phase 7부터 실질적인 동작 시작)
+main.py     엔트리 포인트 (`--once SYMBOL`로 한 사이클 실행)
 ```
 
 **설계 노트:** `telegram/` 패키지가 `python-telegram-bot` 라이브러리의 import 이름과
@@ -96,9 +96,9 @@ Desktop  <->  GitHub  <->  Laptop
    ```bash
    pytest
    ```
-8. **Paper Trading 실행** (Phase 7부터 의미 있는 동작을 시작)
+8. **Paper Trading 실행** (한 사이클: 판단 → Risk Manager → 모의 주문)
    ```bash
-   python main.py
+   python main.py --once 005930
    ```
 
 ## KIS 공식 Toolkit
@@ -181,6 +181,35 @@ AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출�
 영속화할 예정). 이 모듈을 우회해 `broker.order_executor`를 직접 호출하는
 경로는 존재해서는 안 됩니다.
 
+## Order Executor (Phase 7)
+
+`broker.order_executor.OrderExecutor.submit(decision, decision_id, account)`가
+주문을 내는 유일한 경로입니다. 내부에서 먼저 `RiskManager.evaluate()`를 호출하고,
+승인된 경우에만 KIS 주식주문(현금) API(`/uapi/domestic-stock/v1/trading/order-cash`,
+모의 `VTTC0012U` 매수 / `VTTC0011U` 매도, 시장가)를 호출합니다. "이미 승인된 주문"을
+받는 공개 메서드는 없어서 Risk Manager를 건너뛸 수 없습니다.
+
+결과(`models.order.OrderResult.status`):
+
+- `SUBMITTED` -- KIS가 주문번호(ODNO)를 돌려줌. **접수이지 체결이 아님** (체결 확인은 Phase 8).
+- `REJECTED_BY_RISK` -- Risk Manager 거부, KIS로 전달 안 됨.
+- `REJECTED_BY_BROKER` -- KIS가 명시적으로 거부(`rt_cd != '0'`). 확실히 미체결이라
+  같은 `decision_id` 재시도 허용.
+- `UNKNOWN` -- 타임아웃/응답 유실/해석 불가. 주문이 들어갔을 수도 있으므로 해당
+  `decision_id`를 실행된 것으로 잠그고 **비상 정지를 건다** (사람이 계좌를 확인한 뒤
+  해제). 자동 재시도는 절대 하지 않음. HTTP 200만으로는 성공으로 보지 않음.
+
+`AccountState`는 `market.data_collector.build_account_state(symbol)`가 실제 잔고/현재가로
+채웁니다. `AccountState.symbol`과 AI 결정의 `symbol`이 다르면 Risk Manager가 거부합니다.
+
+한 사이클 실행 (스냅샷 → AI 판단 → Risk Manager → 주문 → Telegram):
+
+```bash
+python main.py --once 005930
+```
+
+`day_start_equity`는 아직 영속 저장이 없어 실행 시점의 총평가금액을 씁니다 (Phase 9).
+
 ### 모의투자 ↔ 실전투자 전환
 
 `.env`에 `KIS_PAPER_*`와 `KIS_REAL_*` 두 칸이 모두 있습니다. **정확히 한쪽만
@@ -193,12 +222,11 @@ AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출�
 - 두 세트를 동시에 채우거나 둘 다 비워두면 fail-closed로 에러를 던집니다
   (어느 쪽인지 추측하지 않음).
 
-⚠️ 이 전환 스위치는 **현재가 조회에만** 적용됩니다. 실제 매수/매도 주문
-(`broker/order_executor.py`)과 그 앞단의 Risk Manager(`risk/risk_manager.py`)는
-아직 구현되지 않았으므로, `KIS_REAL_*`를 채워도 지금은 주문이 실행될 방법
-자체가 없습니다. Phase 6~8에서 주문 경로가 만들어질 때도 이 환경 감지 로직을
-그대로 재사용하되, 실전 주문 활성화는 Phase 11(장시간 Paper Trading 검증)
-이후로 별도 안전장치와 함께 다룹니다.
+⚠️ Phase 7부터 주문 경로(`broker/order_executor.py`)가 존재하지만, **실전 주문은
+코드에서 막혀 있습니다**: `OrderExecutor`는 실전 환경의 `KisClient`로 생성하려고 하면
+`RealTradingDisabledError`를 던집니다. `KIS_REAL_*`를 채워도 조회만 실전 서버로 가고
+주문은 나가지 않습니다. 이 차단은 Phase 11(장시간 Paper Trading 검증) 이후 별도
+안전장치와 함께 해제합니다.
 
 ## 보안
 
@@ -221,7 +249,7 @@ AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출�
 | 4 | Telegram 알림 (완료, 실제 메시지 발송 검증 완료) |
 | 5 | AI structured decision (완료, Claude API 실제 호출 검증 완료) |
 | 6 | Risk Manager (완료, 단위 테스트로 검증 -- 실제 주문 경로 연결은 Phase 7) |
-| 7 | 모의 BUY / SELL |
+| 7 | 모의 BUY / SELL (코드/단위 테스트 완료, 실 주문 검증은 KIS 계좌 이슈로 대기) |
 | 8 | 주문/체결 확인 및 중복주문 방지 |
 | 9 | Trade Memory |
 | 10 | Telegram Control |

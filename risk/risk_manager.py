@@ -28,6 +28,8 @@ DEFAULT_DAILY_LOSS_LIMIT_PCT = 0.03
 class AccountState:
     """Account snapshot a caller must supply for one evaluate() call.
 
+    symbol: 이 스냅샷(current_price/held_quantity)이 가리키는 종목. Decision의
+        symbol과 다르면 거부 -- 다른 종목 가격으로 한도를 계산하지 않기 위함.
     total_equity: 계좌 총평가금액 (예수금 + 보유종목 평가금액), position
         size limit의 기준.
     day_start_equity: 당일 장 시작 시점 총평가금액, 일일 손실 한도 계산의
@@ -36,6 +38,7 @@ class AccountState:
     held_quantity: 대상 종목 보유 수량 (SELL이 보유량을 넘지 않는지 체크).
     """
 
+    symbol: str
     total_equity: float
     day_start_equity: float
     current_price: float
@@ -107,6 +110,12 @@ class RiskManager:
 
         if decision.action == "HOLD":
             return reject("HOLD is never an executable order")
+
+        if decision.symbol != account.symbol:
+            return reject(
+                f"decision symbol {decision.symbol!r} does not match account snapshot "
+                f"symbol {account.symbol!r}"
+            )
 
         if decision_id in self._executed_decision_ids:
             return reject(f"decision_id {decision_id!r} already executed -- refusing duplicate order")
