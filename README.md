@@ -20,7 +20,7 @@ Market Data
   -> Risk Manager                    (AI와 독립적인 deterministic code)
   -> Order Executor
   -> KIS Open API
-  -> 체결 확인
+  -> 체결 확인 (UNKNOWN이면 대사 + 비상 정지 유지)
   -> Trade Memory / Database
   -> Telegram Notification
 ```
@@ -210,6 +210,29 @@ python main.py --once 005930
 
 `day_start_equity`는 아직 영속 저장이 없어 실행 시점의 총평가금액을 씁니다 (Phase 9).
 
+## 주문/체결 확인 (Phase 8)
+
+- **체결 확인:** `OrderExecutor.confirm_fill(result)`가 KIS 주식일별주문체결조회
+  (`inquire-daily-ccld`, 모의 `VTTC0081R`)를 폴링해 `models.order.OrderFill`
+  (`FILLED` / `PARTIALLY_FILLED` / `PENDING` / `CANCELLED` / `REJECTED`, 체결수량,
+  평균체결가)을 돌려줍니다. 목록은 끝까지 페이지를 따라가고, 페이지 한도를 넘으면
+  잘린 목록 대신 에러를 냅니다.
+- **UNKNOWN 대사:** `OrderExecutor.reconcile_unknown(result)`가 당일 주문 중
+  같은 종목/방향/수량이고 요청 시각(-60초) 이후에 접수된, 아직 모르는 주문번호를
+  찾아 `PLACED` / `NOT_FOUND` / `AMBIGUOUS`로 알려줍니다. **비상 정지는 절대
+  자동으로 풀지 않습니다** -- 실제로 KIS가 타임아웃된 주문을 31초 뒤에 접수한
+  사례가 있어, `NOT_FOUND`는 "안 들어갔다"는 증거가 아닙니다.
+- **재시작에도 안전한 중복 방지:** `AccountState.open_order_count`(해당 종목 KIS
+  미체결 주문 수)가 0보다 크면 Risk Manager가 새 주문을 거부합니다. 확인하지
+  못했으면(`None`) 역시 거부. `decision_id` 기록은 메모리에만 있지만 브로커의
+  미체결 목록은 재시작 후에도 남습니다.
+- **네트워크 오류 분류:** 주문 요청에서 `ConnectTimeout`(연결 자체가 안 됨 = 요청이
+  전송되지 않음)은 확실한 미접수(`REJECTED_BY_BROKER`), 연결 후 응답 유실
+  (`ReadTimeout` 등)은 `UNKNOWN`. 조회(GET)는 멱등이라 네트워크 오류/초당 한도
+  초과 시 재시도하고, 주문은 절대 재시도하지 않습니다.
+- **호출 간격 제한:** 모의투자 서버는 초당 허용 건수가 낮아 모든 KIS 호출 사이에
+  최소 간격(모의 0.5초 / 실전 0.05초)을 둡니다.
+
 ### 모의투자 ↔ 실전투자 전환
 
 `.env`에 `KIS_PAPER_*`와 `KIS_REAL_*` 두 칸이 모두 있습니다. **정확히 한쪽만
@@ -250,7 +273,7 @@ python main.py --once 005930
 | 5 | AI structured decision (완료, Claude API 실제 호출 검증 완료) |
 | 6 | Risk Manager (완료, 단위 테스트로 검증 -- 실제 주문 경로 연결은 Phase 7) |
 | 7 | 모의 BUY / SELL (완료, 실제 모의 매수/매도 검증 완료) |
-| 8 | 주문/체결 확인 및 중복주문 방지 |
+| 8 | 주문/체결 확인 및 중복주문 방지 (완료, 실제 모의 주문/타임아웃으로 검증) |
 | 9 | Trade Memory |
 | 10 | Telegram Control |
 | 11 | 장시간 Paper Trading |

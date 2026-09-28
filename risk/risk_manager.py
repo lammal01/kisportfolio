@@ -36,6 +36,10 @@ class AccountState:
         기준. (영속 저장은 아직 없음 -- Phase 9 Trade Memory에서 붙일 것.)
     current_price: 대상 종목 현재가. 주문금액 = quantity * current_price.
     held_quantity: 대상 종목 보유 수량 (SELL이 보유량을 넘지 않는지 체크).
+    open_order_count: 대상 종목의 KIS 미체결 주문 수. 0보다 크면 새 주문을
+        거부 -- decision_id 기록은 메모리에만 있어 재시작하면 사라지지만,
+        브로커의 미체결 목록은 남으므로 재시작 후에도 주문이 쌓이지 않음.
+        None(확인 못 함)이면 거부.
     """
 
     symbol: str
@@ -43,6 +47,7 @@ class AccountState:
     day_start_equity: float
     current_price: float
     held_quantity: int = 0
+    open_order_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,15 @@ class RiskManager:
             return reject(
                 f"decision symbol {decision.symbol!r} does not match account snapshot "
                 f"symbol {account.symbol!r}"
+            )
+
+        if account.open_order_count is None:
+            return reject(f"open order state for {decision.symbol!r} unknown -- refusing to order")
+
+        if account.open_order_count > 0:
+            return reject(
+                f"{account.open_order_count} unfilled order(s) already open for "
+                f"{decision.symbol!r} -- refusing to stack another"
             )
 
         if decision_id in self._executed_decision_ids:

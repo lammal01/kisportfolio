@@ -5,6 +5,43 @@
 
 ---
 
+## 2026-09-28 -- Phase 8 완료: 주문/체결 확인 및 중복주문 방지
+
+- `broker/kis_client.py`: `get_daily_orders()` -- 주식일별주문체결조회
+  (`inquire-daily-ccld`, 모의 `VTTC0081R`/실전 `TTTC0081R`). 모의는 페이지당
+  15건이라 `tr_cont` 헤더로 끝까지 따라가고, 20페이지 넘으면 잘린 목록 대신 에러.
+  모든 호출에 최소 간격(throttle, 모의 0.5초) 추가. 조회(GET)는 초당 한도 초과/
+  네트워크 오류 시 재시도, 주문은 절대 재시도 안 함.
+- `models/order.py`: `OrderFill` (FILLED/PARTIALLY_FILLED/PENDING/CANCELLED/
+  REJECTED, 체결수량/평균가), 정정·취소 기록 행 제외(`is_original_order`),
+  `OrderResult.requested_at` 추가.
+- `broker/order_executor.py`: `confirm_fill()` (체결될 때까지 폴링),
+  `reconcile_unknown()` (UNKNOWN 주문을 당일 주문 목록에서 찾기 ->
+  PLACED/NOT_FOUND/AMBIGUOUS). **비상 정지는 자동 해제하지 않음** (사람이 해제).
+- `risk/risk_manager.py`: `AccountState.open_order_count` -- 해당 종목 KIS
+  미체결 주문이 있으면 새 주문 거부, 모르면(None) 거부. 재시작해도 유지되는
+  중복 방지 (decision_id 기록은 메모리뿐이라 재시작 시 사라짐).
+- `main.py --once`: 접수 후 체결 확인, UNKNOWN이면 대사 결과를 Telegram에 포함.
+  조회 실패해도 알림은 나가도록 처리.
+- **실서버에서 실제로 겪은 일 (모의 서버가 불안정했음):**
+  1. 11:09:50 BUY 요청이 `ConnectTimeout` -> UNKNOWN + 비상 정지. 대사 결과
+     NOT_FOUND, 보유 0 -> 실제로 미접수. 연결 자체가 안 된 경우는 요청이 전송되지
+     않은 것이므로 이후 `ConnectTimeout`만 확실한 미접수(`REJECTED_BY_BROKER`)로
+     분류하도록 변경 (연결 후 응답 유실은 계속 UNKNOWN).
+  2. 11:11:29 BUY 요청이 `ReadTimeout` -> UNKNOWN. 5초 뒤 대사 결과 NOT_FOUND
+     였지만 **보유 1주** -- KIS가 31초 뒤(11:12:00)에야 주문 `0000021315`를 접수.
+     -> NOT_FOUND는 미접수의 증거가 아님이 실제로 확인됨 (비상 정지 자동 해제를
+     안 넣은 이유). 대사 시간창을 ±60초에서 "요청 60초 전 이후 전부"로 넓힘
+     (UNKNOWN 뒤엔 비상 정지로 이 프로그램이 추가 주문을 못 내므로 혼동 없음).
+     재대사 결과 PLACED `0000021315` 정상 식별.
+  3. **버그 수정:** 조회(GET)의 네트워크 예외가 `KisApiError`로 감싸지지 않아
+     주문 후 체결 확인 중 타임아웃 나면 알림 없이 죽을 수 있었음 -> 수정.
+- 남은 1주는 SELL `0000021381` -> `confirm_fill` 결과 FILLED 1/1 @ 274,500,
+  보유 0 확인. 모의계좌 총평가 9,998,763원.
+- 테스트 25개 추가, 전체 96/96 통과. **Phase 8 종료.** 다음은 PHASE 9
+  (Trade Memory -- SQLite에 판단/주문/체결 기록, `day_start_equity`·실행된
+  `decision_id` 영속화).
+
 ## 2026-09-28 -- Phase 7 완료: 실제 모의 BUY / SELL 검증
 
 - **블로커 해결 (아래 항목):** 사용자가 KIS에서 모의투자를 재신청하고 새
@@ -209,6 +246,7 @@
 
 ## 다음에 할 일 (Pending)
 
-- PHASE 8: 주문/체결 확인 -- 접수(ODNO)와 체결을 구분해 조회, `UNKNOWN` 주문의
-  자동 대사(reconciliation) 후 비상 정지 해제 절차.
-- (Phase 11 전) KIS 호출 간격 제한(throttle) -- 모의 서버 초당 한도가 낮음.
+- PHASE 9: Trade Memory -- SQLite에 AI 판단/주문/체결 기록, `day_start_equity`와
+  실행된 `decision_id` 영속화 (현재는 재시작 시 초기화).
+- 주문 취소 기능 없음 -- 지정가 주문을 쓰게 되면 미체결 주문이 그날 해당 종목을
+  막으므로(open_order_count) 취소 API 필요. 현재는 시장가만 사용.

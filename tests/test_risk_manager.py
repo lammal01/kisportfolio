@@ -31,6 +31,7 @@ def _account(**overrides) -> AccountState:
         day_start_equity=10_000_000.0,
         current_price=70_000.0,
         held_quantity=0,
+        open_order_count=0,
     )
     defaults.update(overrides)
     return AccountState(**defaults)
@@ -167,3 +168,17 @@ def test_symbol_mismatch_is_rejected():
     verdict = rm.evaluate(_decision(symbol="000660"), "d1", _account(symbol="005930"))
     assert not verdict.approved
     assert "does not match" in verdict.reason
+
+
+def test_open_order_for_symbol_blocks_new_order():
+    rm = RiskManager(limits=LIMITS)
+    verdict = rm.evaluate(_decision(), "d1", _account(open_order_count=1))
+    assert not verdict.approved
+    assert "unfilled order" in verdict.reason
+
+
+def test_unknown_open_order_state_is_rejected():
+    rm = RiskManager(limits=LIMITS)
+    verdict = rm.evaluate(_decision(), "d1", _account(open_order_count=None))
+    assert not verdict.approved
+    assert "unknown" in verdict.reason

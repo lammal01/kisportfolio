@@ -11,6 +11,7 @@ real-time feeds.
 from __future__ import annotations
 
 from broker.kis_client import KisClient
+from models.order import OrderFill, is_original_order
 from risk.risk_manager import AccountState
 
 
@@ -42,7 +43,7 @@ def build_account_state(
     symbol: str, day_start_equity: float | None = None, client: KisClient | None = None
 ) -> AccountState:
     """Fills a risk.risk_manager.AccountState for `symbol` from live KIS
-    balance + current price.
+    balance, current price, and today's order list (open_order_count).
 
     day_start_equity: 당일 시작 총평가금액. None이면 지금 총평가금액을
     그대로 씀 -- 즉 일일 손실 한도가 이 시점부터 계산됨. 영속 저장은
@@ -54,6 +55,11 @@ def build_account_state(
     client = client or KisClient()
     balance = client.get_balance()
     price = client.get_current_price(symbol)
+    open_order_count = sum(
+        1
+        for row in client.get_daily_orders()
+        if row.get("pdno") == symbol and is_original_order(row) and OrderFill.from_kis(row).is_open
+    )
 
     def number(source: dict, key: str) -> float:
         try:
@@ -71,4 +77,5 @@ def build_account_state(
         day_start_equity=total_equity if day_start_equity is None else day_start_equity,
         current_price=number(price, "stck_prpr"),
         held_quantity=held_quantity,
+        open_order_count=open_order_count,
     )

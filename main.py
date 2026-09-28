@@ -4,7 +4,8 @@
     python main.py --once 005930      # one paper-trading cycle for one symbol
 
 One cycle: account/price snapshot -> AI decision -> OrderExecutor (which
-runs the Risk Manager before anything reaches KIS) -> Telegram notice.
+runs the Risk Manager before anything reaches KIS) -> fill confirmation
+(or reconciliation of an UNKNOWN order) -> Telegram notice.
 A continuous loop comes with Phase 11; real-money orders stay disabled
 until then (broker.order_executor refuses a real-trading client).
 """
@@ -16,12 +17,12 @@ import logging
 import uuid
 
 from agents.trading_agent import TradingAgent, TradingAgentError
-from broker.kis_client import KisClient
+from broker.kis_client import KisApiError, KisClient
 from broker.order_executor import OrderExecutor
 from config.settings import KisCredentialError, get_settings
 from market.data_collector import build_account_state
 from models.decision import DecisionParseError
-from models.order import OrderResult
+from models.order import OrderFill, OrderFillParseError, OrderResult
 from risk.risk_manager import RiskManager
 from telegram.notifier import TelegramError, TelegramNotifier
 
@@ -47,6 +48,15 @@ def format_order_result(result: OrderResult) -> str:
     return "\n".join(lines)
 
 
+def format_fill(fill: OrderFill | None) -> str:
+    if fill is None:
+        return "fill: not listed by KIS yet -- check manually"
+    return (
+        f"fill: {fill.status} {fill.filled_qty}/{fill.ordered_qty} "
+        f"@ avg {fill.avg_price:,.0f} (remaining {fill.remaining_qty})"
+    )
+
+
 def run_once(symbol: str) -> OrderResult | None:
     """Returns the OrderResult, or None when no valid AI decision was made."""
     client = KisClient()
@@ -68,7 +78,21 @@ def run_once(symbol: str) -> OrderResult | None:
 
     decision_id = uuid.uuid4().hex
     result = executor.submit(decision, decision_id, account)
-    message = format_order_result(result) + "\nAI: " + " / ".join(decision.reason)
+    message = format_order_result(result)
+    # The order already happened by now -- a failed lookup must not stop
+    # the notification from going out.
+    try:
+        if result.submitted:
+            message += "\n" + format_fill(executor.confirm_fill(result))
+        elif result.status == "UNKNOWN":
+            rec = executor.reconcile_unknown(result)
+            message += f"\nreconciliation: {rec.outcome} {[c.order_no for c in rec.candidates]}"
+    except (KisApiError, OrderFillParseError) as exc:
+        logger.error("fill/reconciliation lookup failed for %s: %s", decision_id, exc)
+        message += f"\nfill lookup failed: {exc} -- check manually"
+    if result.status == "UNKNOWN":
+        message += "\nEMERGENCY STOP engaged -- check the account before resuming"
+    message += "\nAI: " + " / ".join(decision.reason)
     print(message)
     _notify(message)
     return result

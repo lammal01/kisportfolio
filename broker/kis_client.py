@@ -1,7 +1,8 @@
 """Korea Investment & Securities (KIS) Open API client.
 
 OAuth token issuance/caching, 현재가 조회 (Phase 2), 잔고/보유종목/
-매수가능금액 조회 (Phase 3), and 현금 매수/매도 주문 (Phase 7). Endpoint/tr_id values are taken from the
+매수가능금액 조회 (Phase 3), 현금 매수/매도 주문 (Phase 7), and 일별
+주문체결조회 (Phase 8). Endpoint/tr_id values are taken from the
 official open-trading-api examples (examples_user/kis_auth.py and
 examples_user/domestic_stock/domestic_stock_functions.py):
 https://github.com/koreainvestment/open-trading-api
@@ -16,9 +17,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -31,6 +35,25 @@ _TOKEN_CACHE_PATH = Path(__file__).resolve().parent.parent / ".kis_token_cache.j
 
 # KIS access tokens are valid ~24h; refresh a bit early to be safe.
 _EXPIRY_SAFETY_MARGIN = timedelta(minutes=5)
+
+_KST = ZoneInfo("Asia/Seoul")
+
+# Minimum spacing between REST calls. The 모의투자 server's per-second
+# limit is very low ("초당 거래건수를 초과" seen with just 2-3 calls in a
+# row); 실전 allows far more. Shared across KisClient instances since the
+# limit is per app key, not per object.
+_MIN_REQUEST_INTERVAL = {"paper": 0.5, "real": 0.05}
+_throttle_lock = threading.Lock()
+_last_request_at = 0.0
+
+# Read-only GETs that hit the rate limit are retried this many times
+# (orders never are -- see place_cash_order).
+_RATE_LIMIT_RETRIES = 2
+_RATE_LIMIT_BACKOFF_SECONDS = 1.0
+
+# inquire-daily-ccld returns 15 rows/page on 모의투자 (100 on 실전).
+# Past this many pages we refuse rather than return a partial list.
+_MAX_ORDER_PAGES = 20
 
 
 class KisApiError(RuntimeError):
@@ -186,22 +209,50 @@ class KisClient:
             "custtype": "P",
         }
 
+    def _throttle(self) -> None:
+        global _last_request_at
+        with _throttle_lock:
+            wait = _last_request_at + _MIN_REQUEST_INTERVAL[self._environment] - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            _last_request_at = time.monotonic()
+
+    @staticmethod
+    def _is_rate_limited(body: dict) -> bool:
+        return body.get("msg_cd") == "EGW00201" or "초당 거래건수" in str(body.get("msg1", ""))
+
+    def _get_page(
+        self, path: str, tr_id: str, params: dict[str, str], tr_cont: str = ""
+    ) -> tuple[dict, str]:
+        """One GET against `path`. Returns (body, response tr_cont header)
+        after checking rt_cd; read-only, so rate-limit rejections and
+        network errors are retried. Raises KisApiError on any failure."""
+        headers = self._headers(tr_id=tr_id)
+        if tr_cont:
+            headers["tr_cont"] = tr_cont
+        for attempt in range(_RATE_LIMIT_RETRIES + 1):
+            self._throttle()
+            try:
+                resp = requests.get(f"{self.base_url}{path}", headers=headers, params=params, timeout=10)
+                body = resp.json() if resp.content else {}
+            except (requests.RequestException, ValueError) as exc:
+                # Reads are idempotent, so a lost/garbled response is retried.
+                error = KisApiError(f"{path} failed: {exc!r}")
+                retryable = True
+            else:
+                if resp.status_code == 200 and body.get("rt_cd") == "0":
+                    return body, str(resp.headers.get("tr_cont", "")).strip()
+                error = KisApiError(f"{path} failed: {body.get('msg1', body)}", msg_cd=body.get("msg_cd"))
+                retryable = self._is_rate_limited(body)
+            if not (retryable and attempt < _RATE_LIMIT_RETRIES):
+                break
+            time.sleep(_RATE_LIMIT_BACKOFF_SECONDS)
+        raise error
+
     def _get(self, path: str, tr_id: str, params: dict[str, str]) -> dict:
         """GET request against `path`, returning the parsed body after
         checking rt_cd. Raises KisApiError on any failure."""
-        resp = requests.get(
-            f"{self.base_url}{path}",
-            headers=self._headers(tr_id=tr_id),
-            params=params,
-            timeout=10,
-        )
-        body = resp.json() if resp.content else {}
-        if resp.status_code != 200 or body.get("rt_cd") != "0":
-            raise KisApiError(
-                f"{path} failed: {body.get('msg1', body)}",
-                msg_cd=body.get("msg_cd"),
-            )
-        return body
+        return self._get_page(path, tr_id, params)[0]
 
     def get_current_price(self, symbol: str, market_div_code: str = "J") -> dict:
         """현재가 조회. symbol: 6-digit KRX code, e.g. '005930'."""
@@ -291,9 +342,10 @@ class KisClient:
 
         order_division defaults to "01" (시장가, unit_price "0").
 
-        Never retried here. Raises KisApiError when KIS explicitly rejects
-        the order (definitely not placed), and KisOrderUncertainError when
-        the outcome can't be known (possibly placed).
+        Never retried here. Raises KisApiError when the order definitely
+        wasn't placed (KIS explicitly rejected it, or the connection was
+        never established), and KisOrderUncertainError when the outcome
+        can't be known (possibly placed).
         """
         tr_id = self._ORDER_TR_IDS.get((self._environment, side))
         if tr_id is None:
@@ -304,6 +356,7 @@ class KisClient:
         path = "/uapi/domestic-stock/v1/trading/order-cash"
         # Built before sending: a token failure here means nothing was sent.
         headers = self._headers(tr_id=tr_id)
+        self._throttle()
         try:
             resp = requests.post(
                 f"{self.base_url}{path}",
@@ -321,6 +374,10 @@ class KisClient:
                 },
                 timeout=10,
             )
+        except requests.ConnectTimeout as exc:
+            # The TCP connection was never established, so no request bytes
+            # were sent -- definitely not placed.
+            raise KisApiError(f"{path}: could not connect to KIS, order not sent ({exc!r})") from exc
         except requests.RequestException as exc:
             raise KisOrderUncertainError(f"{path}: no response from KIS ({exc!r})") from exc
 
@@ -341,3 +398,46 @@ class KisClient:
                 f"{path}: ambiguous response (HTTP {resp.status_code}): {body}"
             )
         return output
+
+    def get_daily_orders(self, date: str | None = None) -> list[dict]:
+        """주식일별주문체결조회: every order placed on `date` (YYYYMMDD,
+        default today KST), filled or not, newest first. Each row has
+        odno/sll_buy_dvsn_cd/pdno/ord_qty/tot_ccld_qty/rmn_qty/avg_prvs/
+        cncl_yn/rjct_qty/ord_tmd -- see models.order.OrderFill.
+
+        Follows pagination to the end; raises KisApiError rather than
+        return a truncated list, since callers use this to decide whether
+        an order exists at all.
+        """
+        date = date or datetime.now(_KST).strftime("%Y%m%d")
+        tr_id = "VTTC0081R" if self._environment == "paper" else "TTTC0081R"
+        params = {
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
+            "INQR_STRT_DT": date,
+            "INQR_END_DT": date,
+            "SLL_BUY_DVSN_CD": "00",
+            "PDNO": "",
+            "CCLD_DVSN": "00",
+            "INQR_DVSN": "00",
+            "INQR_DVSN_3": "00",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+            "EXCG_ID_DVSN_CD": "KRX",
+        }
+        rows: list[dict] = []
+        tr_cont = ""
+        for _ in range(_MAX_ORDER_PAGES):
+            body, resp_tr_cont = self._get_page(
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld", tr_id, params, tr_cont
+            )
+            rows.extend(body.get("output1") or [])
+            if resp_tr_cont not in ("F", "M"):
+                return rows
+            params["CTX_AREA_FK100"] = body.get("ctx_area_fk100", "")
+            params["CTX_AREA_NK100"] = body.get("ctx_area_nk100", "")
+            tr_cont = "N"
+        raise KisApiError(f"daily order inquiry exceeded {_MAX_ORDER_PAGES} pages -- refusing a partial list")
