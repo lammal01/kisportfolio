@@ -2,29 +2,39 @@
 
     python main.py                    # show which KIS environment is configured
     python main.py --once 005930      # one paper-trading cycle for one symbol
+    python main.py --loop             # paper-trading loop over WATCHLIST (Phase 11)
     python main.py --release-emergency-stop   # after checking the account yourself
 
 One cycle: account/price snapshot -> AI decision -> OrderExecutor (which
 runs the Risk Manager before anything reaches KIS) -> fill confirmation
 (or reconciliation of an UNKNOWN order) -> Telegram notice, with every
 step recorded in memory.trade_memory (SQLite).
-A continuous loop comes with Phase 11; real-money orders stay disabled
-until then (broker.order_executor refuses a real-trading client).
+--loop repeats that every CYCLE_MINUTES during the session for the
+WATCHLIST symbols market.signal_filter lets through. Real-money orders
+stay disabled (broker.order_executor refuses a real-trading client).
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sqlite3
+import time
 import uuid
 from dataclasses import replace
+from datetime import datetime, timedelta
+from datetime import time as dtime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from agents.trading_agent import TradingAgent, TradingAgentError
 from broker.kis_client import KisApiError, KisClient
 from broker.order_executor import OrderExecutor
 from config.settings import KisCredentialError, get_settings
+from market import indicators
 from market.data_collector import build_account_state
+from market.signal_filter import SignalFilter
 from memory.trade_memory import TradeMemory
 from models.decision import DecisionParseError
 from models.order import OrderFill, OrderFillParseError, OrderResult
@@ -33,6 +43,8 @@ from telegram.labels import ACTION, FILL_STATUS, ORDER_STATUS, RECONCILIATION, l
 from telegram.notifier import TelegramError, TelegramNotifier
 
 logger = logging.getLogger(__name__)
+
+_KST = ZoneInfo("Asia/Seoul")
 
 
 def _notify(text: str) -> None:
@@ -66,9 +78,14 @@ def format_fill(fill: OrderFill | None) -> str:
     )
 
 
-def run_once(symbol: str, memory: TradeMemory | None = None) -> OrderResult | None:
+def run_once(
+    symbol: str, memory: TradeMemory | None = None, context: dict | None = None
+) -> OrderResult | None:
     """Returns the OrderResult, or None when no order was attempted
-    (emergency stop engaged, paused via Telegram, or no valid AI decision)."""
+    (emergency stop engaged, paused via Telegram, or no valid AI decision).
+
+    context: extra snapshot fields from the loop (indicators, the
+    signal_filter triggers that caused this call)."""
     memory = memory or TradeMemory()
     client = KisClient()
     risk = RiskManager(store=memory)
@@ -95,16 +112,22 @@ def run_once(symbol: str, memory: TradeMemory | None = None) -> OrderResult | No
         "held_quantity": account.held_quantity,
         "avg_cost": account.avg_cost,
         "total_equity": account.total_equity,
+        # Lets the AI size orders sensibly; risk.risk_manager still enforces it.
+        "max_buy_value": account.total_equity * get_settings().risk_max_position_pct,
         "recent_trades": memory.recent_trades(symbol),
+        **(context or {}),
     }
+    triggers = list((context or {}).get("signal_triggers", []))
 
     try:
         decision = TradingAgent().decide(symbol, snapshot)
     except (TradingAgentError, DecisionParseError) as exc:
+        memory.record_ai_call(symbol, ok=False, triggers=triggers)
         logger.error("no valid AI decision for %s: %s", symbol, exc)
         _notify(f"[판단 실패] {symbol}: AI 판단을 받지 못해 주문 없음 -- {exc}")
         return None
 
+    memory.record_ai_call(symbol, ok=True, triggers=triggers)
     decision_id = uuid.uuid4().hex
     # Recorded before submitting: if this write fails, no order goes out.
     memory.record_decision(decision_id, decision, snapshot)
@@ -139,6 +162,8 @@ def run_once(symbol: str, memory: TradeMemory | None = None) -> OrderResult | No
         message += f"\n경고: 체결 기록 저장 실패 -- {exc}"
     if result.status == "UNKNOWN":
         message += "\n비상 정지 걸림 -- 계좌 확인 전까지 모든 주문 차단"
+    if triggers:
+        message += "\n호출 이유: " + ", ".join(triggers)
     message += f"\n\nAI 판단 (확신도 {decision.confidence:.0%}):\n" + "\n".join(f"- {r}" for r in decision.reason)
     print(message)
     _notify(message)
@@ -159,9 +184,198 @@ def release_emergency_stop(memory: TradeMemory | None = None) -> None:
     _notify(message)
 
 
+MARKET_OPEN = dtime(9, 0)
+# Last new orders at 15:20 -- the 15:20-15:30 closing auction is skipped.
+ORDER_CUTOFF = dtime(15, 20)
+SUMMARY_AFTER = dtime(15, 35)
+# KIS may not have today's daily row for a moment after the open; only
+# call it a holiday once this much of the session has passed.
+HOLIDAY_CHECK_AFTER = dtime(9, 10)
+ERROR_NOTICE_INTERVAL = timedelta(minutes=30)
+
+
+def _kst_now() -> datetime:
+    return datetime.now(_KST)
+
+
+class PaperTradingLoop:
+    """main.py --loop: every CYCLE_MINUTES during the session, check each
+    WATCHLIST symbol with market.signal_filter and run a full cycle
+    (run_once) only for the ones that trigger. Real-money orders stay
+    impossible (OrderExecutor refuses a real client); the emergency stop /
+    pause are honored every cycle; Telegram gets state changes, orders,
+    errors (throttled) and a daily summary -- not every quiet cycle."""
+
+    def __init__(
+        self,
+        memory: TradeMemory,
+        settings=None,
+        now=_kst_now,
+        sleep=time.sleep,
+        notify=None,
+        run_cycle=None,
+        kis_client_factory=KisClient,
+    ):
+        self._memory = memory
+        self._settings = settings or get_settings()
+        self._now = now
+        self._sleep = sleep
+        self._notify = notify or _notify
+        self._run_once = run_cycle or run_once
+        self._kis = kis_client_factory
+        self._filter = SignalFilter(memory, self._settings.ai_daily_call_limit)
+        self._state: str | None = None
+        self._holiday: str | None = None
+        self._summary_sent_for: str | None = None
+        self._limit_notice_for: str | None = None
+        self._last_error_notice: datetime | None = None
+
+    def run_forever(self) -> None:
+        s = self._settings
+        self._notify(
+            f"[모의 매매 루프 시작] 감시 {', '.join(s.watchlist)} / {s.cycle_minutes}분 간격 / "
+            f"AI 하루 최대 {s.ai_daily_call_limit}회"
+        )
+        while True:
+            try:
+                self.tick(self._now())
+            except Exception as exc:  # the loop itself must keep running
+                logger.exception("tick failed")
+                self._error_notice(f"루프 오류: {exc!r}")
+            self._sleep(self.seconds_until_next_tick(self._now()))
+
+    def seconds_until_next_tick(self, now: datetime) -> float:
+        step = self._settings.cycle_minutes
+        base = now.replace(second=0, microsecond=0)
+        nxt = base + timedelta(minutes=step - base.minute % step)
+        return max((nxt - now).total_seconds(), 1.0)
+
+    def tick(self, now: datetime) -> None:
+        if now.weekday() >= 5:
+            return
+        today = now.strftime("%Y%m%d")
+        if MARKET_OPEN <= now.time() < ORDER_CUTOFF:
+            if self._holiday != today:
+                self.cycle(now)
+        elif now.time() >= SUMMARY_AFTER and self._summary_sent_for != today and self._holiday != today:
+            self.send_daily_summary(now)
+            self._summary_sent_for = today
+
+    def _current_state(self) -> str:
+        if RiskManager(store=self._memory).emergency_stop_engaged:
+            return "stopped"
+        return "paused" if self._memory.load_pause() is not None else "running"
+
+    def cycle(self, now: datetime) -> None:
+        state = self._current_state()
+        if state != self._state:
+            if self._state is not None or state != "running":
+                self._notify(
+                    {
+                        "running": "[루프] 매매 사이클 재개",
+                        "paused": "[루프] 일시정지 중 -- 사이클 건너뜀 (/resume 으로 재개)",
+                        "stopped": "[루프] 비상 정지 중 -- 사이클 건너뜀 (계좌 확인 후 /release_stop)",
+                    }[state]
+                )
+            self._state = state
+        if state != "running":
+            return
+
+        today = now.strftime("%Y%m%d")
+        client = self._kis()
+        held = {h.get("pdno"): int(h.get("hldg_qty", "0")) for h in client.get_balance()["holdings"]}
+        for symbol in self._settings.watchlist:
+            try:
+                ind = indicators.compute(client.get_daily_prices(symbol), now)
+                if not ind.is_trading_day:
+                    if now.time() >= HOLIDAY_CHECK_AFTER:
+                        self._holiday = today
+                        self._notify(f"[휴장일] {today} -- 오늘은 매매하지 않습니다.")
+                        return
+                    continue
+                check = self._filter.check(symbol, ind, held.get(symbol, 0), now)
+                logger.info(
+                    "%s price=%s triggers=%s call_ai=%s blocked=%s",
+                    symbol, ind.price, list(check.triggers), check.call_ai, check.blocked_by,
+                )
+                if check.call_ai:
+                    self._run_once(
+                        symbol,
+                        memory=self._memory,
+                        context={"indicators": ind.as_dict(), "signal_triggers": list(check.triggers)},
+                    )
+                elif check.blocked_by and "상한" in check.blocked_by and self._limit_notice_for != today:
+                    self._limit_notice_for = today
+                    self._notify(f"[루프] {check.blocked_by} -- 오늘은 더 이상 AI를 호출하지 않습니다.")
+            except Exception as exc:
+                logger.exception("cycle failed for %s", symbol)
+                self._error_notice(f"{symbol} 처리 실패: {exc!r}")
+
+    def _error_notice(self, text: str) -> None:
+        now = self._now()
+        if self._last_error_notice is None or now - self._last_error_notice >= ERROR_NOTICE_INTERVAL:
+            self._last_error_notice = now
+            self._notify(f"[루프 오류] {text}\n(같은 종류 알림은 30분에 한 번만)")
+
+    def send_daily_summary(self, now: datetime) -> None:
+        today = now.strftime("%Y%m%d")
+        summary = self._memory.daily_summary(today)
+        start = self._memory.last_day_start_equity()
+        lines = [f"[일일 요약] {today}"]
+        lines.append(f"AI 호출: {summary['ai_calls']}회")
+        decisions = summary["decisions"]
+        lines.append(
+            "판단: " + (", ".join(f"{label(ACTION, a)} {n}" for a, n in decisions.items()) or "없음")
+        )
+        orders = summary["orders"]
+        lines.append(
+            "주문: " + (", ".join(f"{label(ORDER_STATUS, st)} {n}" for st, n in orders.items()) or "없음")
+        )
+        lines.append(f"체결된 주문: {summary['filled_orders']}건")
+        lines.append(f"실현손익(수수료 제외): {summary['realized_pnl']:,.0f}원")
+        try:
+            equity = float(self._kis().get_balance()["summary"]["tot_evlu_amt"])
+            if start and start[0] == today:
+                change = equity - start[1]
+                lines.append(f"총평가: {equity:,.0f}원 (시작 대비 {change:+,.0f}원, {change / start[1]:+.2%})")
+            else:
+                lines.append(f"총평가: {equity:,.0f}원")
+        except Exception as exc:
+            lines.append(f"총평가 조회 실패: {exc}")
+        self._notify("\n".join(lines))
+
+
+class LoopAlreadyRunningError(RuntimeError):
+    pass
+
+
+def acquire_loop_lock(path: Path):
+    """Holds an OS-level lock on `path` for the life of the process, so a
+    second --loop (which could double every order) refuses to start. The
+    OS drops the lock when the process dies, so a crash never leaves a
+    stale lock behind. Returns the open file; keep a reference to it."""
+    handle = open(path, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise LoopAlreadyRunningError(f"another --loop is already running ({path})") from exc
+    return handle
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="KIS AI Trading Agent")
     parser.add_argument("--once", metavar="SYMBOL", help="run one paper-trading cycle for SYMBOL")
+    parser.add_argument(
+        "--loop", action="store_true", help="run the paper-trading loop over WATCHLIST during market hours"
+    )
     parser.add_argument(
         "--release-emergency-stop",
         action="store_true",
@@ -183,6 +397,21 @@ def main() -> None:
         release_emergency_stop()
     if args.once:
         run_once(args.once)
+    if args.loop:
+        if environment == "real":
+            print("--loop is paper-only until Phase 11 validation is done -- refusing to start.")
+            return
+        try:
+            lock = acquire_loop_lock(Path(settings.trade_db_path).with_suffix(".loop.lock"))
+        except LoopAlreadyRunningError as exc:
+            print(f"refusing to start: {exc}")
+            return
+        try:
+            PaperTradingLoop(TradeMemory()).run_forever()
+        except KeyboardInterrupt:
+            _notify("[모의 매매 루프 종료] 사용자가 중지함")
+        finally:
+            lock.close()
 
 
 if __name__ == "__main__":

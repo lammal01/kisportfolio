@@ -85,6 +85,16 @@ CREATE TABLE IF NOT EXISTS pause (
     paused_at TEXT NOT NULL
 );
 
+-- Every AI call attempt, successful or not (failed calls cost too) --
+-- what the daily AI call limit counts.
+CREATE TABLE IF NOT EXISTS ai_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    called_at TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    ok INTEGER NOT NULL,
+    triggers TEXT                      -- JSON list of signal_filter reasons
+);
+
 CREATE INDEX IF NOT EXISTS idx_decisions_symbol_created ON decisions(symbol, created_at);
 """
 

@@ -51,6 +51,8 @@ SYSTEM_PROMPT = (
     "recent_trades: your own last few decisions on this symbol and how they "
     "turned out (order status, fill, realized_pnl). Treat them as context "
     "only -- a past decision is not a reason to repeat it. "
+    "max_buy_value is the most a single BUY may cost (quantity * price); "
+    "larger orders are rejected by an independent risk manager. "
     "Write every reason item in Korean (한국어), concise, keeping numbers "
     "and tickers as-is."
 )

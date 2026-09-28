@@ -266,6 +266,22 @@ class KisClient:
         )
         return body["output"]
 
+    def get_daily_prices(self, symbol: str) -> list[dict]:
+        """주식현재가 일자별: the last 30 trading days (stck_bsop_date,
+        stck_oprc/hgpr/lwpr/clpr, acml_vol, prdy_ctrt), newest first. During
+        a session today's row is live (stck_clpr = current price)."""
+        body = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+            tr_id="FHKST01010400",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": symbol,
+                "FID_PERIOD_DIV_CODE": "D",
+                "FID_ORG_ADJ_PRC": "1",  # 수정주가 -- splits don't fake a crash
+            },
+        )
+        return body["output"]
+
     def get_balance(self) -> dict:
         """주식잔고조회: holdings (output1) + account summary (output2).
 

@@ -16,6 +16,7 @@ env/
 # Local DB
 *.sqlite3
 *.db
+*.loop.lock
 
 # Test / tooling caches
 .pytest_cache/

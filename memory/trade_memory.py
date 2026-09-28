@@ -206,6 +206,74 @@ class TradeMemory:
             (iso_date,),
         )[0][0]
 
+    # --- AI call accounting / signal filter state ---------------------------
+
+    def record_ai_call(self, symbol: str, ok: bool, triggers: list[str] | None = None) -> None:
+        self._write(
+            "INSERT INTO ai_calls (called_at, symbol, ok, triggers) VALUES (?, ?, ?, ?)",
+            (_now(), symbol, int(ok), json.dumps(triggers or [], ensure_ascii=False)),
+        )
+
+    def ai_call_count(self, trade_date: str | None = None) -> int:
+        trade_date = trade_date or datetime.now(_KST).strftime("%Y%m%d")
+        iso_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+        return self._read(
+            "SELECT COUNT(*) FROM ai_calls WHERE substr(called_at, 1, 10) = ?", (iso_date,)
+        )[0][0]
+
+    def last_ai_call(self, symbol: str) -> tuple[datetime, float | None] | None:
+        """(time, price the AI saw) of the latest AI call for `symbol`.
+        Price comes from the recorded decision snapshot; None if that call
+        failed or recorded no price."""
+        rows = self._read(
+            "SELECT called_at FROM ai_calls WHERE symbol = ? ORDER BY id DESC LIMIT 1", (symbol,)
+        )
+        if not rows:
+            return None
+        called_at = datetime.fromisoformat(rows[0][0])
+        price = None
+        snap_rows = self._read(
+            "SELECT snapshot FROM decisions WHERE symbol = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (symbol,),
+        )
+        if snap_rows:
+            snapshot = json.loads(snap_rows[0][0])
+            raw = (snapshot.get("indicators") or {}).get("price") or (snapshot.get("price") or {}).get("stck_prpr")
+            try:
+                price = float(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                price = None
+        return called_at, price
+
+    def daily_summary(self, trade_date: str | None = None) -> dict:
+        """Counts for the end-of-day report: AI calls, decisions by action,
+        orders by status, filled orders, realized PnL (before fees)."""
+        trade_date = trade_date or datetime.now(_KST).strftime("%Y%m%d")
+        iso_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+        actions = dict(
+            self._read(
+                "SELECT action, COUNT(*) FROM decisions WHERE substr(created_at, 1, 10) = ? GROUP BY action",
+                (iso_date,),
+            )
+        )
+        orders = dict(
+            self._read(
+                "SELECT status, COUNT(*) FROM orders WHERE substr(created_at, 1, 10) = ? "
+                "AND side != 'HOLD' GROUP BY status",
+                (iso_date,),
+            )
+        )
+        filled = self._read(
+            "SELECT COUNT(*) FROM fills WHERE substr(updated_at, 1, 10) = ? AND filled_qty > 0", (iso_date,)
+        )[0][0]
+        return {
+            "ai_calls": self.ai_call_count(trade_date),
+            "decisions": actions,
+            "orders": orders,
+            "filled_orders": filled,
+            "realized_pnl": self.realized_pnl_total(trade_date),
+        }
+
     # --- pause (soft, Telegram /pause /resume) ---------------------------
 
     def load_pause(self) -> str | None:

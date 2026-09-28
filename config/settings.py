@@ -60,6 +60,18 @@ class Settings:
         default_factory=lambda: float(os.getenv("RISK_DAILY_LOSS_LIMIT_PCT") or "0.03")
     )
 
+    # Phase 11 paper-trading loop (main.py --loop).
+    # 삼성전자, SK하이닉스, 현대차, NAVER, LG에너지솔루션 by default.
+    watchlist: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            code.strip()
+            for code in (os.getenv("WATCHLIST") or "005930,000660,005380,035420,373220").split(",")
+            if code.strip()
+        )
+    )
+    cycle_minutes: int = field(default_factory=lambda: int(os.getenv("CYCLE_MINUTES") or "10"))
+    ai_daily_call_limit: int = field(default_factory=lambda: int(os.getenv("AI_DAILY_CALL_LIMIT") or "50"))
+
     # memory.trade_memory SQLite file -- per machine, gitignored.
     trade_db_path: str = field(
         default_factory=lambda: os.getenv("TRADE_DB_PATH")
