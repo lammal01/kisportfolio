@@ -100,7 +100,7 @@ def test_duplicate_decision_id_is_submitted_once():
 
     assert first.status == "SUBMITTED"
     assert second.status == "REJECTED_BY_RISK"
-    assert "already executed" in second.reason
+    assert "이미 실행된" in second.reason
     assert client.place_cash_order.call_count == 1
 
 
@@ -117,7 +117,7 @@ def test_uncertain_outcome_locks_decision_and_engages_emergency_stop():
     client.place_cash_order.return_value = ORDER_OUTPUT
     later = executor.submit(_decision(), "d2", _account())
     assert later.status == "REJECTED_BY_RISK"
-    assert "emergency stop" in later.reason
+    assert "비상 정지" in later.reason
     assert client.place_cash_order.call_count == 1
 
 

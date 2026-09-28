@@ -123,16 +123,32 @@ Desktop  <->  GitHub  <->  Laptop
 
 ## Telegram
 
-`telegram/notifier.TelegramNotifier.send_message()`가 Telegram Bot HTTP API
-(`sendMessage`)를 직접 호출합니다. Bot 생성/토큰 발급:
-
+**설정:**
 1. Telegram에서 **@BotFather** → `/newbot` → 토큰 발급 (`TELEGRAM_BOT_TOKEN`)
 2. 만든 봇에게 아무 메시지나 먼저 보내기 (봇이 나에게 먼저 말 걸 수 없음)
 3. `https://api.telegram.org/bot<TOKEN>/getUpdates`에서 `chat.id` 확인 (`TELEGRAM_CHAT_ID`)
 
-결정/체결/거부 알림용 메시지 템플릿(섹션 10)은 `models.decision`/`models.order`가
-실제로 생기는 Phase 5 이후에 추가합니다 -- 아직 없는 데이터 모양을 미리 짐작해서
-만들지 않습니다.
+**알림 (`telegram/notifier.py`):** 매매 사이클 결과(주문 접수/리스크 거부/증권사 거부/
+결과 불명/관망, 체결, AI 판단 근거)를 한국어로 보냅니다. 전송 실패는 로그만 남기고
+매매 로직을 막지 않으며, 에러 메시지에서 봇 토큰은 가립니다.
+
+**제어 명령 (`telegram/bot.py`, Phase 10):** 별도 프로세스로 실행합니다.
+```bash
+python -m telegram.bot
+```
+| 명령 | 동작 |
+|---|---|
+| `/status` | 환경, 비상 정지/일시정지 상태, 오늘 판단 수/실현손익 |
+| `/balance`, `/positions` | 예수금/총평가, 보유종목 |
+| `/price 005930` | 현재가 |
+| `/trades 005930`, `/decision` | 최근 판단/주문/체결, 가장 최근 AI 판단 |
+| `/pause [사유]`, `/resume` | 새 사이클 중단 / 점검(비상 정지 없음 + KIS 조회 정상) 후 재개 |
+| `/stop [사유]` | 비상 정지 -- 실행 중인 사이클도 다음 주문 직전에 차단됨 |
+| `/release_stop` | 비상 정지 해제 -- 봇이 준 확인 코드를 60초 안에 다시 보내야 함 |
+
+안전 규칙: `TELEGRAM_CHAT_ID` 외의 채팅은 무시(응답 없음), 봇이 켜지기 전에 보낸
+메시지는 버림(꺼져 있는 동안 쌓인 `/resume` 등이 갑자기 실행되지 않도록).
+PC가 켜져 있고 봇 프로세스가 돌고 있어야 명령에 응답합니다.
 
 ## AI Trading Agent
 
@@ -297,7 +313,7 @@ AI에게는 전체 기록이 아니라 같은 종목의 최근 5건 요약(`rece
 | 7 | 모의 BUY / SELL (완료, 실제 모의 매수/매도 검증 완료) |
 | 8 | 주문/체결 확인 및 중복주문 방지 (완료, 실제 모의 주문/타임아웃으로 검증) |
 | 9 | Trade Memory (완료, 실제 사이클 기록 검증) |
-| 10 | Telegram Control |
+| 10 | Telegram Control (완료, 실제 명령 전체 검증) |
 | 11 | 장시간 Paper Trading |
 | 12 | 백테스트 및 거래 결과 분석 |
 

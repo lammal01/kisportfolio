@@ -1,10 +1,10 @@
 """Outbound Telegram notifications.
 
-Phase 4 scope: a single send_message() primitive on top of the plain
-Telegram Bot HTTP API (no python-telegram-bot dependency -- see README,
-"KIS 공식 Toolkit" note on the telegram/python-telegram-bot name clash).
-Decision/fill/rejection-specific message templates come in later phases
-once models.decision / models.order actually exist.
+A thin wrapper over the plain Telegram Bot HTTP API (no
+python-telegram-bot dependency -- see README note on the
+telegram/python-telegram-bot name clash): call() for any Bot API method,
+send_message() for the configured chat. telegram.bot builds the command
+interface on top of call().
 
 Never includes API keys/secrets/tokens in message text. A Telegram outage
 must not be able to take down the rest of the pipeline -- callers in
@@ -31,15 +31,28 @@ class TelegramNotifier:
                 "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID is missing -- cannot send notifications."
             )
         self._chat_id = settings.telegram_chat_id
+        self._token = settings.telegram_bot_token
         self._base_url = f"https://api.telegram.org/bot{settings.telegram_bot_token}"
 
-    def send_message(self, text: str, parse_mode: str = "HTML") -> dict:
-        resp = requests.post(
-            f"{self._base_url}/sendMessage",
-            json={"chat_id": self._chat_id, "text": text, "parse_mode": parse_mode},
-            timeout=10,
-        )
-        body = resp.json() if resp.content else {}
+    def _redact(self, text: str) -> str:
+        """requests errors embed the full URL, which contains the bot token."""
+        return text.replace(self._token, "<redacted>")
+
+    def call(self, method: str, payload: dict, timeout: float = 10) -> object:
+        """Calls a Bot API method; returns its 'result'. Every failure,
+        network errors included, surfaces as TelegramError with the token
+        stripped from the message."""
+        try:
+            resp = requests.post(f"{self._base_url}/{method}", json=payload, timeout=timeout)
+            body = resp.json() if resp.content else {}
+        except (requests.RequestException, ValueError) as exc:
+            raise TelegramError(self._redact(f"{method} failed: {exc!r}")) from None
         if resp.status_code != 200 or not body.get("ok"):
-            raise TelegramError(f"sendMessage failed: {body.get('description', body)}")
+            raise TelegramError(self._redact(f"{method} failed: {body.get('description', body)}"))
         return body["result"]
+
+    def send_message(self, text: str, parse_mode: str = "HTML") -> dict:
+        payload = {"chat_id": self._chat_id, "text": text}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        return self.call("sendMessage", payload)

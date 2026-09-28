@@ -41,7 +41,7 @@ def test_buy_within_limits_is_approved():
     rm = RiskManager(limits=LIMITS)
     verdict = rm.evaluate(_decision(quantity=10), "d1", _account())
     assert verdict.approved
-    assert verdict.reason == "within limits"
+    assert verdict.reason == "한도 이내"
 
 
 def test_hold_is_never_executable():
@@ -56,7 +56,7 @@ def test_buy_exceeding_position_limit_is_rejected():
     # 20 * 70_000 = 1_400_000 > 10% of 10_000_000 = 1_000_000 position cap.
     verdict = rm.evaluate(_decision(quantity=20), "d1", _account())
     assert not verdict.approved
-    assert "position limit" in verdict.reason
+    assert "포지션 한도" in verdict.reason
 
 
 def test_sell_exceeding_held_quantity_is_rejected():
@@ -65,7 +65,7 @@ def test_sell_exceeding_held_quantity_is_rejected():
         _decision(action="SELL", quantity=5), "d1", _account(held_quantity=2)
     )
     assert not verdict.approved
-    assert "exceeds held quantity" in verdict.reason
+    assert "보유 수량" in verdict.reason
 
 
 def test_sell_within_held_quantity_is_approved():
@@ -84,7 +84,7 @@ def test_duplicate_decision_id_is_rejected():
 
     second = rm.evaluate(_decision(quantity=1), "d1", _account())
     assert not second.approved
-    assert "duplicate" in second.reason
+    assert "중복" in second.reason
 
 
 def test_unmarked_decision_id_can_be_reevaluated():
@@ -103,7 +103,7 @@ def test_daily_loss_limit_blocks_new_buy():
     account = _account(total_equity=9_600_000.0, day_start_equity=10_000_000.0)
     verdict = rm.evaluate(_decision(action="BUY", quantity=1), "d1", account)
     assert not verdict.approved
-    assert "daily loss" in verdict.reason
+    assert "당일 손실" in verdict.reason
 
 
 def test_daily_loss_limit_still_allows_sell():
@@ -128,7 +128,7 @@ def test_emergency_stop_blocks_everything():
     rm.engage_emergency_stop("manual halt for testing")
     verdict = rm.evaluate(_decision(quantity=1), "d1", _account())
     assert not verdict.approved
-    assert "emergency stop" in verdict.reason
+    assert "비상 정지" in verdict.reason
 
 
 def test_emergency_stop_can_be_disengaged():
@@ -167,18 +167,18 @@ def test_symbol_mismatch_is_rejected():
     rm = RiskManager(limits=LIMITS)
     verdict = rm.evaluate(_decision(symbol="000660"), "d1", _account(symbol="005930"))
     assert not verdict.approved
-    assert "does not match" in verdict.reason
+    assert "다름" in verdict.reason
 
 
 def test_open_order_for_symbol_blocks_new_order():
     rm = RiskManager(limits=LIMITS)
     verdict = rm.evaluate(_decision(), "d1", _account(open_order_count=1))
     assert not verdict.approved
-    assert "unfilled order" in verdict.reason
+    assert "미체결 주문" in verdict.reason
 
 
 def test_unknown_open_order_state_is_rejected():
     rm = RiskManager(limits=LIMITS)
     verdict = rm.evaluate(_decision(), "d1", _account(open_order_count=None))
     assert not verdict.approved
-    assert "unknown" in verdict.reason
+    assert "확인하지 못해" in verdict.reason

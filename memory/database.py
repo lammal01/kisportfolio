@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS emergency_stop (
     engaged_at TEXT NOT NULL
 );
 
+-- Soft pause (Telegram /pause): no new cycles start. Unlike the emergency
+-- stop it's lifted by /resume after a system check.
+CREATE TABLE IF NOT EXISTS pause (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    reason TEXT NOT NULL,
+    paused_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_decisions_symbol_created ON decisions(symbol, created_at);
 """
 

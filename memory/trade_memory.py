@@ -170,6 +170,61 @@ class TradeMemory:
             trades.append(trade)
         return trades
 
+    def latest_decision(self) -> dict | None:
+        """The most recent decision with its order/fill outcome, for
+        Telegram /decision. None if nothing recorded yet."""
+        rows = self._read(
+            """SELECT d.decision_id, d.created_at, d.symbol, d.action, d.quantity,
+                      d.confidence, d.reason, o.status AS order_status,
+                      o.reason AS order_reason, o.order_no, f.status AS fill_status,
+                      f.filled_qty, f.avg_price, f.realized_pnl
+               FROM decisions d
+               LEFT JOIN orders o ON o.decision_id = d.decision_id
+               LEFT JOIN fills f ON f.decision_id = d.decision_id
+               ORDER BY d.created_at DESC, d.rowid DESC
+               LIMIT 1"""
+        )
+        if not rows:
+            return None
+        row = dict(rows[0])
+        row["reason"] = json.loads(row["reason"])
+        return row
+
+    def decision_count(self, trade_date: str | None = None) -> int:
+        """Number of AI decisions recorded on `trade_date` (YYYYMMDD KST)."""
+        trade_date = trade_date or datetime.now(_KST).strftime("%Y%m%d")
+        iso_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+        return self._read(
+            "SELECT COUNT(*) FROM decisions WHERE substr(created_at, 1, 10) = ?", (iso_date,)
+        )[0][0]
+
+    def realized_pnl_total(self, trade_date: str | None = None) -> float:
+        trade_date = trade_date or datetime.now(_KST).strftime("%Y%m%d")
+        iso_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+        return self._read(
+            "SELECT COALESCE(SUM(realized_pnl), 0) FROM fills WHERE substr(updated_at, 1, 10) = ?",
+            (iso_date,),
+        )[0][0]
+
+    # --- pause (soft, Telegram /pause /resume) ---------------------------
+
+    def load_pause(self) -> str | None:
+        rows = self._read("SELECT reason FROM pause WHERE id = 1")
+        return rows[0][0] if rows else None
+
+    def save_pause(self, reason: str | None) -> None:
+        if reason is None:
+            self._write("DELETE FROM pause WHERE id = 1", ())
+        else:
+            self._write(
+                "INSERT OR REPLACE INTO pause (id, reason, paused_at) VALUES (1, ?, ?)",
+                (reason, _now()),
+            )
+
+    def last_day_start_equity(self) -> tuple[str, float] | None:
+        rows = self._read("SELECT trade_date, start_equity FROM daily_equity ORDER BY trade_date DESC LIMIT 1")
+        return (rows[0][0], rows[0][1]) if rows else None
+
     # --- daily equity -------------------------------------------------------
 
     def day_start_equity(self, current_equity: float, trade_date: str | None = None) -> float:

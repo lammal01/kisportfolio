@@ -5,6 +5,38 @@
 
 ---
 
+## 2026-09-28 -- Phase 10 완료: Telegram Control + 알림 한국어화
+
+- `telegram/bot.py`: `python -m telegram.bot`로 따로 실행하는 long-polling 봇
+  (`getUpdates`, 라이브러리 없이 `requests`). 명령: `/status` `/balance`
+  `/positions` `/price` `/trades` `/decision` `/pause` `/resume` `/stop`
+  `/release_stop` `/help`. main.py와는 SQLite(Trade Memory)로만 상태 공유.
+- **안전 설계:**
+  - `TELEGRAM_CHAT_ID` 외 채팅은 무시 (응답 없음).
+  - 봇 시작 전에 보낸 메시지는 버림 -- 실제로 시작하자마자 사용자가 미리 보낸
+    "잔고"가 버려지는 것 확인.
+  - `/stop`은 영속 비상 정지. `RiskManager.evaluate()`가 매 평가 직전에 저장소를
+    다시 읽어, 다른 프로세스에서 이미 돌고 있는 사이클도 다음 주문 전에 차단됨
+    (다시 읽기는 정지를 **걸기만** 하고 절대 풀지 않음, 읽기 실패 = 정지).
+  - `/release_stop`은 1회용 6자리 확인 코드를 60초 안에 다시 보내야 해제 (틀리면
+    코드 폐기).
+  - `/resume`은 비상 정지 중이면 거부, KIS 조회 점검 통과해야 재개.
+  - 일시정지(`pause` 테이블)는 새 사이클만 막는 소프트 정지, `run_once`가 확인.
+- **버그 수정 (보안):** Telegram 전송 중 네트워크 오류가 나면 `requests` 예외가 그대로
+  올라왔는데, 그 메시지에 **봇 토큰이 포함된 URL**이 들어 있어 로그에 토큰이 찍힐 수
+  있었고, `main._notify`가 `TelegramError`만 잡아서 주문 후 알림 단계에서 프로그램이
+  죽을 수도 있었음 -> 모든 오류를 `TelegramError`로 감싸고 토큰을 가림.
+- **한국어화 (사용자 요청):** 매매 사이클 알림(`[주문 접수]`/`[리스크 거부]`/
+  `[증권사 거부]`/`[결과 불명]`/`[관망]`, 체결), Risk Manager 거부 사유, AI 판단
+  근거(시스템 프롬프트에 한국어 작성 지시)를 한국어로. 내부 상태값/로그/DB는 영어
+  유지. 명령어는 텔레그램 규칙상 영어(`/status` 등) -- 한글 별칭은 이번에 선택하지 않음.
+- 라이브 검증: 모든 명령을 실제 KIS/DB/Telegram으로 점검 (응답은 사용자 텔레그램으로
+  전송). `/resume`이 KIS 모의 서버 타임아웃으로 한 번 **거부됨** -> 점검 로직이 의도대로
+  동작, 재시도 시 통과. 화이트리스트 외 채팅 무시 확인. 실제 사이클 알림과 AI 근거가
+  한국어로 오는 것 확인.
+- 테스트 22개 추가, 전체 135/135 통과. **Phase 10 종료.** 다음은 PHASE 11
+  (장시간 Paper Trading).
+
 ## 2026-09-28 -- Phase 9 완료: Trade Memory (SQLite)
 
 - `memory/database.py`: 스키마 -- `decisions`(AI 판단+스냅샷), `orders`(모든
@@ -274,8 +306,7 @@
 
 ## 다음에 할 일 (Pending)
 
-- PHASE 10: Telegram Control -- chat ID whitelist, 조회 명령(`/status`, `/balance`,
-  `/price`), 비상 정지 해제/일시정지 명령 (사람의 명시적 명령으로만).
-- 주문 취소 기능 없음 -- 지정가 주문을 쓰게 되면 미체결 주문이 그날 해당 종목을
-  막으므로(open_order_count) 취소 API 필요. 현재는 시장가만 사용.
+- PHASE 11: 장시간 Paper Trading -- 장중 연속 루프, 감시 종목, 신호 필터
+  (`market/indicators.py`, `market/signal_filter.py`)로 AI 호출 줄이기.
+- 주문 취소 기능 없음 -- 지정가 주문을 쓰게 되면 필요. 현재는 시장가만 사용.
 - HOLD 판단도 `orders`에 REJECTED_BY_RISK로 기록됨 -- 분석(Phase 12) 때 구분 필요.

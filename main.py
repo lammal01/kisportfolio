@@ -29,6 +29,7 @@ from memory.trade_memory import TradeMemory
 from models.decision import DecisionParseError
 from models.order import OrderFill, OrderFillParseError, OrderResult
 from risk.risk_manager import RiskManager
+from telegram.labels import ACTION, FILL_STATUS, ORDER_STATUS, RECONCILIATION, label
 from telegram.notifier import TelegramError, TelegramNotifier
 
 logger = logging.getLogger(__name__)
@@ -43,28 +44,31 @@ def _notify(text: str) -> None:
 
 
 def format_order_result(result: OrderResult) -> str:
+    if result.side == "HOLD":
+        return f"[관망] {result.symbol} -- 주문 없음\ndecision_id: {result.decision_id}"
     lines = [
-        f"[{result.status}] {result.side} {result.symbol} x{result.quantity}",
-        f"decision_id: {result.decision_id}",
-        f"reason: {result.reason}",
+        f"[{label(ORDER_STATUS, result.status)}] {result.symbol} "
+        f"{label(ACTION, result.side)} {result.quantity}주",
+        f"사유: {result.reason}",
     ]
     if result.order_no:
-        lines.append(f"order_no: {result.order_no} ({result.order_time})")
+        lines.append(f"주문번호: {result.order_no} ({result.order_time})")
+    lines.append(f"decision_id: {result.decision_id}")
     return "\n".join(lines)
 
 
 def format_fill(fill: OrderFill | None) -> str:
     if fill is None:
-        return "fill: not listed by KIS yet -- check manually"
+        return "체결: KIS 주문 목록에 아직 없음 -- 직접 확인 필요"
     return (
-        f"fill: {fill.status} {fill.filled_qty}/{fill.ordered_qty} "
-        f"@ avg {fill.avg_price:,.0f} (remaining {fill.remaining_qty})"
+        f"체결: {label(FILL_STATUS, fill.status)} {fill.filled_qty}/{fill.ordered_qty}주 "
+        f"평균 {fill.avg_price:,.0f}원 (잔량 {fill.remaining_qty}주)"
     )
 
 
 def run_once(symbol: str, memory: TradeMemory | None = None) -> OrderResult | None:
     """Returns the OrderResult, or None when no order was attempted
-    (emergency stop engaged, or no valid AI decision)."""
+    (emergency stop engaged, paused via Telegram, or no valid AI decision)."""
     memory = memory or TradeMemory()
     client = KisClient()
     risk = RiskManager(store=memory)
@@ -72,11 +76,15 @@ def run_once(symbol: str, memory: TradeMemory | None = None) -> OrderResult | No
         # Checked before the AI call so a stopped system doesn't keep paying
         # for decisions it can't act on.
         message = (
-            f"[EMERGENCY STOP] {symbol}: skipped -- {risk.emergency_stop_reason}\n"
-            "Check the account, then: python main.py --release-emergency-stop"
+            f"[비상 정지] {symbol}: 사이클 건너뜀 -- {risk.emergency_stop_reason}\n"
+            "계좌 확인 후 해제: 텔레그램 /release_stop 또는 python main.py --release-emergency-stop"
         )
         print(message)
         _notify(message)
+        return None
+    pause_reason = memory.load_pause()
+    if pause_reason is not None:
+        print(f"[일시정지] {symbol}: 사이클 건너뜀 -- {pause_reason}")
         return None
     executor = OrderExecutor(client, risk)
 
@@ -94,7 +102,7 @@ def run_once(symbol: str, memory: TradeMemory | None = None) -> OrderResult | No
         decision = TradingAgent().decide(symbol, snapshot)
     except (TradingAgentError, DecisionParseError) as exc:
         logger.error("no valid AI decision for %s: %s", symbol, exc)
-        _notify(f"[NO DECISION] {symbol}: {exc}")
+        _notify(f"[판단 실패] {symbol}: AI 판단을 받지 못해 주문 없음 -- {exc}")
         return None
 
     decision_id = uuid.uuid4().hex
@@ -109,7 +117,7 @@ def run_once(symbol: str, memory: TradeMemory | None = None) -> OrderResult | No
         memory.record_order(result)
     except sqlite3.Error as exc:
         logger.error("failed to record order %s: %s", decision_id, exc)
-        message += f"\nWARNING: order not saved to trade memory: {exc}"
+        message += f"\n경고: 주문 기록 저장 실패 -- {exc}"
     try:
         fill = None
         if result.submitted:
@@ -118,18 +126,20 @@ def run_once(symbol: str, memory: TradeMemory | None = None) -> OrderResult | No
         elif result.status == "UNKNOWN":
             rec = executor.reconcile_unknown(result)
             fill = rec.fill
-            message += f"\nreconciliation: {rec.outcome} {[c.order_no for c in rec.candidates]}"
+            message += f"\n주문 대사: {label(RECONCILIATION, rec.outcome)}"
+            if rec.candidates:
+                message += f" {[c.order_no for c in rec.candidates]}"
         if fill is not None:
             memory.record_fill(decision_id, fill, cost_basis=account.avg_cost)
     except (KisApiError, OrderFillParseError) as exc:
         logger.error("fill/reconciliation lookup failed for %s: %s", decision_id, exc)
-        message += f"\nfill lookup failed: {exc} -- check manually"
+        message += f"\n체결 조회 실패 -- 직접 확인 필요: {exc}"
     except sqlite3.Error as exc:
         logger.error("failed to record fill %s: %s", decision_id, exc)
-        message += f"\nWARNING: fill not saved to trade memory: {exc}"
+        message += f"\n경고: 체결 기록 저장 실패 -- {exc}"
     if result.status == "UNKNOWN":
-        message += "\nEMERGENCY STOP engaged -- check the account before resuming"
-    message += "\nAI: " + " / ".join(decision.reason)
+        message += "\n비상 정지 걸림 -- 계좌 확인 전까지 모든 주문 차단"
+    message += f"\n\nAI 판단 (확신도 {decision.confidence:.0%}):\n" + "\n".join(f"- {r}" for r in decision.reason)
     print(message)
     _notify(message)
     return result
@@ -144,7 +154,7 @@ def release_emergency_stop(memory: TradeMemory | None = None) -> None:
         return
     reason = risk.emergency_stop_reason
     risk.disengage_emergency_stop()
-    message = f"[EMERGENCY STOP RELEASED] by operator (was: {reason})"
+    message = f"[비상 정지 해제] 운영자가 직접 해제 (이전 사유: {reason})"
     print(message)
     _notify(message)
 

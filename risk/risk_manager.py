@@ -113,6 +113,22 @@ class RiskManager:
                 self._emergency_stop = True
                 self._emergency_stop_reason = reason
 
+    def _refresh_emergency_stop(self) -> None:
+        """Picks up an emergency stop engaged by another process (e.g.
+        Telegram /stop) right before each evaluation. Only ever engages --
+        a stop is never cleared by re-reading, and a failed read counts as
+        engaged."""
+        if self._store is None:
+            return
+        try:
+            reason = self._store.load_emergency_stop()
+        except Exception as exc:
+            logger.error("could not re-read emergency stop state: %s", exc)
+            reason = f"비상 정지 상태를 읽지 못함: {exc}"
+        if reason is not None and not self._emergency_stop:
+            self._emergency_stop = True
+            self._emergency_stop_reason = reason
+
     def _persist(self, action: str, fn, *args) -> None:
         """Writes state through to the store. A failed write never raises
         (it can happen right after an order was placed) -- it engages the
@@ -125,7 +141,7 @@ class RiskManager:
         except Exception as exc:
             logger.error("risk state persistence failed (%s): %s", action, exc)
             self._emergency_stop = True
-            self._emergency_stop_reason = f"risk state persistence failed ({action}): {exc}"
+            self._emergency_stop_reason = f"리스크 상태 저장 실패 ({action}): {exc}"
 
     @property
     def emergency_stop_engaged(self) -> bool:
@@ -160,63 +176,62 @@ class RiskManager:
         def reject(reason: str) -> RiskVerdict:
             return RiskVerdict(approved=False, reason=reason, decision=decision)
 
+        self._refresh_emergency_stop()
         if self._emergency_stop:
-            return reject(f"emergency stop engaged: {self._emergency_stop_reason}")
+            return reject(f"비상 정지 중: {self._emergency_stop_reason}")
 
         if decision.action == "HOLD":
-            return reject("HOLD is never an executable order")
+            return reject("HOLD(관망)는 주문 대상이 아님")
 
         if decision.symbol != account.symbol:
             return reject(
-                f"decision symbol {decision.symbol!r} does not match account snapshot "
-                f"symbol {account.symbol!r}"
+                f"AI 판단 종목 {decision.symbol}이(가) 계좌 스냅샷 종목 "
+                f"{account.symbol}과(와) 다름"
             )
 
         if account.open_order_count is None:
-            return reject(f"open order state for {decision.symbol!r} unknown -- refusing to order")
+            return reject(f"{decision.symbol} 미체결 주문 상태를 확인하지 못해 주문 거부")
 
         if account.open_order_count > 0:
             return reject(
-                f"{account.open_order_count} unfilled order(s) already open for "
-                f"{decision.symbol!r} -- refusing to stack another"
+                f"{decision.symbol}에 미체결 주문 {account.open_order_count}건이 이미 있어 "
+                "추가 주문 거부"
             )
 
         if decision_id in self._executed_decision_ids:
-            return reject(f"decision_id {decision_id!r} already executed -- refusing duplicate order")
+            return reject(f"이미 실행된 decision_id {decision_id} -- 중복 주문 거부")
 
         if account.current_price <= 0:
-            return reject(f"invalid current_price={account.current_price!r} for {decision.symbol!r}")
+            return reject(f"{decision.symbol} 현재가 값이 잘못됨 (current_price={account.current_price!r})")
 
         if account.total_equity <= 0:
-            return reject(f"invalid total_equity={account.total_equity!r}")
+            return reject(f"총평가금액 값이 잘못됨 (total_equity={account.total_equity!r})")
 
         if decision.action == "SELL" and decision.quantity > account.held_quantity:
             return reject(
-                f"SELL quantity {decision.quantity} exceeds held quantity "
-                f"{account.held_quantity} for {decision.symbol!r}"
+                f"매도 수량 {decision.quantity}주가 {decision.symbol} 보유 수량 "
+                f"{account.held_quantity}주를 초과"
             )
 
         order_value = decision.quantity * account.current_price
         max_position_value = account.total_equity * self._limits.max_position_pct
         if decision.action == "BUY" and order_value > max_position_value:
             return reject(
-                f"BUY order value {order_value:,.0f} exceeds position limit "
-                f"{max_position_value:,.0f} ({self._limits.max_position_pct:.0%} of "
-                f"equity {account.total_equity:,.0f})"
+                f"매수 금액 {order_value:,.0f}원이 포지션 한도 {max_position_value:,.0f}원 "
+                f"(총평가 {account.total_equity:,.0f}원의 {self._limits.max_position_pct:.0%})을 초과"
             )
 
         if decision.action == "BUY":
             if account.day_start_equity <= 0:
-                return reject(f"invalid day_start_equity={account.day_start_equity!r}")
+                return reject(f"당일 시작 평가금액 값이 잘못됨 (day_start_equity={account.day_start_equity!r})")
             daily_pnl_pct = (account.total_equity - account.day_start_equity) / account.day_start_equity
             if daily_pnl_pct <= -self._limits.daily_loss_limit_pct:
                 return reject(
-                    f"daily loss {daily_pnl_pct:.2%} exceeds limit "
-                    f"-{self._limits.daily_loss_limit_pct:.0%} -- new BUY orders blocked "
-                    "for today (SELL is still allowed)"
+                    f"당일 손실 {daily_pnl_pct:.2%}이(가) 한도 -{self._limits.daily_loss_limit_pct:.0%}를 "
+                    "넘어 오늘 신규 매수 차단 (매도는 허용)"
                 )
 
-        return RiskVerdict(approved=True, reason="within limits", decision=decision)
+        return RiskVerdict(approved=True, reason="한도 이내", decision=decision)
 
     def mark_executed(self, decision_id: str) -> None:
         """Call only after broker.order_executor has actually submitted

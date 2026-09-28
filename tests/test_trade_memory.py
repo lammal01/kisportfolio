@@ -170,7 +170,7 @@ def test_executed_decision_id_survives_restart(tmp_path):
     verdict = restarted.evaluate(_decision(), "d1", _account())
 
     assert not verdict.approved
-    assert "already executed" in verdict.reason
+    assert "이미 실행된" in verdict.reason
 
 
 def test_emergency_stop_survives_restart_until_released(tmp_path):
@@ -196,7 +196,7 @@ def test_failed_persist_engages_emergency_stop_without_raising():
     rm.mark_executed("d1")  # must not raise: the order already went out
 
     assert rm.emergency_stop_engaged
-    assert "persistence failed" in rm.emergency_stop_reason
+    assert "저장 실패" in rm.emergency_stop_reason
     assert not rm.evaluate(_decision(), "d1", _account()).approved
 
 
@@ -229,7 +229,7 @@ def test_run_once_skips_ai_while_emergency_stop_engaged(memory):
     with patch("main.KisClient"), patch("main.TradingAgent") as agent, patch("main._notify") as notify:
         assert main.run_once("005930", memory=memory) is None
     agent.assert_not_called()
-    assert "EMERGENCY STOP" in notify.call_args.args[0]
+    assert "비상 정지" in notify.call_args.args[0]
 
 
 def test_release_emergency_stop_clears_persisted_state(memory):
@@ -272,3 +272,12 @@ def test_run_once_records_decision_order_and_fill(memory):
     assert trade["fill"]["status"] == "FILLED"
     assert trade["realized_pnl"] == 2_000.0
     assert result.decision_id in memory.load_executed_decision_ids()
+
+
+def test_run_once_skips_while_paused(memory):
+    import main
+
+    memory.save_pause("telegram /pause: lunch")
+    with patch("main.KisClient"), patch("main.TradingAgent") as agent, patch("main._notify"):
+        assert main.run_once("005930", memory=memory) is None
+    agent.assert_not_called()

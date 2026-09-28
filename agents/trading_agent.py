@@ -50,7 +50,9 @@ SYSTEM_PROMPT = (
     "isn't in the snapshot you were given. The snapshot may include "
     "recent_trades: your own last few decisions on this symbol and how they "
     "turned out (order status, fill, realized_pnl). Treat them as context "
-    "only -- a past decision is not a reason to repeat it."
+    "only -- a past decision is not a reason to repeat it. "
+    "Write every reason item in Korean (한국어), concise, keeping numbers "
+    "and tickers as-is."
 )
 
 

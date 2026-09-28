@@ -122,7 +122,7 @@ class OrderExecutor:
             # helps with that, but never lifts the stop).
             self._risk.mark_executed(decision_id)
             self._risk.engage_emergency_stop(
-                f"order outcome unknown for decision_id={decision_id!r}: {exc}"
+                f"주문 결과 불명 (decision_id={decision_id}): {exc}"
             )
             logger.error("order outcome unknown: decision_id=%s error=%s", decision_id, exc)
             return result("UNKNOWN", str(exc))
@@ -135,7 +135,7 @@ class OrderExecutor:
         self._risk.mark_executed(decision_id)
         self._known_order_nos.add(output["ODNO"])
         logger.info("order accepted by KIS: decision_id=%s order_no=%s", decision_id, output.get("ODNO"))
-        return result("SUBMITTED", "accepted by KIS (not yet confirmed filled)", output)
+        return result("SUBMITTED", "KIS 접수 완료 (체결은 별도 확인)", output)
 
     def _todays_orders(self) -> list[OrderFill]:
         return [OrderFill.from_kis(row) for row in self._client.get_daily_orders() if is_original_order(row)]
