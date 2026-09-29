@@ -8,6 +8,7 @@ dependencies = [
     "requests>=2.31",
     "websockets>=12.0",
     "anthropic>=1.0",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +24,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["main", "daily_report"]
 
 [tool.setuptools.packages.find]
 include = ["agents*", "broker*", "market*", "risk*", "telegram*", "memory*", "models*", "config*"]

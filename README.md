@@ -47,6 +47,7 @@ models/     decision.py                  AI structured output 모델
 config/     settings.py                  .env 기반 설정 (fail-closed)
 tests/      test_risk_manager.py, test_decision_parser.py, test_order_executor.py
 main.py     엔트리 포인트 (`--once SYMBOL`로 한 사이클 실행)
+daily_report.py  하루 매매 데이터 -> 엑셀 매매일지 (조회 전용)
 ```
 
 **설계 노트:** `telegram/` 패키지가 `python-telegram-bot` 라이브러리의 import 이름과
@@ -299,6 +300,20 @@ python main.py --loop
 nohup .venv/bin/python -u main.py --loop >> loop.log 2>&1 &
 nohup .venv/bin/python -u -m telegram.bot >> bot.log 2>&1 &
 ```
+
+### 매매일지 엑셀
+
+```bash
+python daily_report.py              # 오늘 (KST)
+python daily_report.py 20260928     # 지난 날짜
+python daily_report.py --no-kis     # KIS 조회 없이 로컬 DB만
+```
+
+`reports/매매일지_<YYYYMMDD>.xlsx`(gitignore)에 시트 5개를 만듭니다: 요약(계좌·매매 활동·
+종목별), 주문·체결, 보유현황(평가손익 차트), AI판단내역(당시 지표·호출 신호·근거),
+증권사대조(KIS 일별주문체결조회와 로컬 기록을 주문번호로 대조). **조회 전용**이라 주문을
+낼 수 없고, 루프가 돌고 있어도 실행해도 됩니다. 보유현황·총평가는 과거 날짜를 넣어도
+생성 시점 계좌 기준입니다. 같은 날 파일이 엑셀에 열려 있으면 시각을 붙인 새 파일로 저장합니다.
 
 ### 모의투자 ↔ 실전투자 전환
 

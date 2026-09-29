@@ -293,6 +293,43 @@ class TradeMemory:
         rows = self._read("SELECT trade_date, start_equity FROM daily_equity ORDER BY trade_date DESC LIMIT 1")
         return (rows[0][0], rows[0][1]) if rows else None
 
+    def start_equity_on(self, trade_date: str) -> float | None:
+        """Read-only counterpart of day_start_equity() for a past day."""
+        rows = self._read("SELECT start_equity FROM daily_equity WHERE trade_date = ?", (trade_date,))
+        return rows[0][0] if rows else None
+
+    # --- daily journal (daily_report.py) ------------------------------------
+
+    def day_journal(self, trade_date: str | None = None) -> list[dict]:
+        """Every decision recorded on `trade_date` (YYYYMMDD KST), oldest
+        first, with its order/fill outcome and the indicators and signal
+        triggers from the snapshot the AI saw (not the raw snapshot)."""
+        trade_date = trade_date or datetime.now(_KST).strftime("%Y%m%d")
+        iso_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+        rows = self._read(
+            """SELECT d.decision_id, d.created_at, d.symbol, d.action, d.quantity,
+                      d.confidence, d.reason, d.snapshot, o.status AS order_status,
+                      o.reason AS order_reason, o.order_no, f.status AS fill_status,
+                      f.filled_qty, f.avg_price, f.order_time AS fill_order_time,
+                      f.cost_basis, f.realized_pnl
+               FROM decisions d
+               LEFT JOIN orders o ON o.decision_id = d.decision_id
+               LEFT JOIN fills f ON f.decision_id = d.decision_id
+               WHERE substr(d.created_at, 1, 10) = ?
+               ORDER BY d.created_at, d.rowid""",
+            (iso_date,),
+        )
+        journal = []
+        for row in rows:
+            entry = dict(row)
+            snapshot = json.loads(entry.pop("snapshot"))
+            entry["reason"] = json.loads(entry["reason"])
+            entry["indicators"] = snapshot.get("indicators") or {}
+            entry["signal_triggers"] = snapshot.get("signal_triggers") or []
+            entry["held_quantity"] = snapshot.get("held_quantity")
+            journal.append(entry)
+        return journal
+
     # --- daily equity -------------------------------------------------------
 
     def day_start_equity(self, current_equity: float, trade_date: str | None = None) -> float:

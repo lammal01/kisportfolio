@@ -26,6 +26,9 @@ env/
 # Logs
 *.log
 
+# Generated reports (account data)
+reports/
+
 # OS / editor
 .DS_Store
 .vscode/
