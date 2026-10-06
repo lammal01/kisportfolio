@@ -177,6 +177,13 @@ AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출�
 
 - **포지션 크기 한도:** 1회 BUY 주문금액이 계좌 총평가금액의
   `RISK_MAX_POSITION_PCT`(기본 10%)를 넘으면 거부.
+- **총 투자 한도:** 이번 BUY까지 합친 보유 주식 평가금액이 총평가금액의
+  `RISK_MAX_TOTAL_EXPOSURE_PCT`(기본 90%)를 넘으면 거부 -- 종목별 한도만으로는
+  여러 종목에 나눠 사다 보면 계좌 전체가 한도 없이 과투자(예수금 마이너스)가
+  되기 때문. 이미 한도를 넘은 상태에서도 SELL은 허용.
+- **주문가능금액:** BUY 금액이 KIS가 알려준 주문가능금액(`ord_psbl_cash`)을
+  넘으면 거부. 보유 평가금액이나 주문가능금액을 확인하지 못해도 BUY는 거부
+  (SELL에는 영향 없음).
 - **일일 손실 한도:** 당일 평가금액이 장 시작 대비 `RISK_DAILY_LOSS_LIMIT_PCT`
   (기본 3%) 이상 하락하면 그날 신규 BUY를 전면 차단 (기존 보유분 정리를 위한
   SELL은 계속 허용).
@@ -190,7 +197,9 @@ AI Agent는 `broker.order_executor`를 직접 호출하지 않습니다 -- 출�
   호출해야만 해제됩니다.
 
 한도값은 코드를 건드리지 않고 `.env`의 `RISK_MAX_POSITION_PCT` /
-`RISK_DAILY_LOSS_LIMIT_PCT`로 조정합니다.
+`RISK_DAILY_LOSS_LIMIT_PCT` / `RISK_MAX_TOTAL_EXPOSURE_PCT`로 조정합니다.
+AI에게 알려주는 `max_buy_value`는 위 세 한도(포지션/총 투자/주문가능금액) 중
+가장 작은 값(`RiskManager.max_buy_value`)이라, 살 수 없는 주문을 제안하지 않습니다.
 
 `RiskManager`는 KIS API를 직접 호출하지 않습니다 -- `AccountState`를 채우는
 것은 호출자(`market.data_collector.build_account_state`)의 몫이고, 재시작 후에도

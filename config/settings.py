@@ -59,6 +59,9 @@ class Settings:
     risk_daily_loss_limit_pct: float = field(
         default_factory=lambda: float(os.getenv("RISK_DAILY_LOSS_LIMIT_PCT") or "0.03")
     )
+    risk_max_total_exposure_pct: float = field(
+        default_factory=lambda: float(os.getenv("RISK_MAX_TOTAL_EXPOSURE_PCT") or "0.90")
+    )
 
     # Phase 11 paper-trading loop (main.py --loop).
     # 삼성전자, SK하이닉스, 현대차, NAVER, LG에너지솔루션 by default.

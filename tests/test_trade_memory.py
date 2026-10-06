@@ -68,6 +68,8 @@ def _account(**overrides) -> AccountState:
         current_price=70_000.0,
         held_quantity=0,
         open_order_count=0,
+        stock_value=0.0,
+        buying_power=10_000_000.0,
     )
     defaults.update(overrides)
     return AccountState(**defaults)

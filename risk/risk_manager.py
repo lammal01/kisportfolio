@@ -27,9 +27,11 @@ from models.decision import Decision
 logger = logging.getLogger(__name__)
 
 # Conservative defaults; override via RISK_MAX_POSITION_PCT /
-# RISK_DAILY_LOSS_LIMIT_PCT in .env, never by editing these.
+# RISK_DAILY_LOSS_LIMIT_PCT / RISK_MAX_TOTAL_EXPOSURE_PCT in .env, never by
+# editing these.
 DEFAULT_MAX_POSITION_PCT = 0.10
 DEFAULT_DAILY_LOSS_LIMIT_PCT = 0.03
+DEFAULT_MAX_TOTAL_EXPOSURE_PCT = 0.90
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,10 @@ class AccountState:
         None(확인 못 함)이면 거부.
     avg_cost: 대상 종목 매입평균가 (보유 없으면 None). 한도 계산에는 쓰지
         않음 -- SELL의 실현손익 기록(memory.trade_memory)용으로 전달만 함.
+    stock_value: 전 종목 보유 주식 평가금액 합계. 총 투자 한도 계산의 기준.
+        None(확인 못 함)이면 매수 거부.
+    buying_power: 대상 종목 시장가 매수 시 KIS가 알려준 주문가능금액(원).
+        None(확인 못 함)이면 매수 거부.
     """
 
     symbol: str
@@ -59,6 +65,8 @@ class AccountState:
     held_quantity: int = 0
     open_order_count: int | None = None
     avg_cost: float | None = None
+    stock_value: float | None = None
+    buying_power: float | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +80,7 @@ class RiskVerdict:
 class RiskLimits:
     max_position_pct: float = DEFAULT_MAX_POSITION_PCT
     daily_loss_limit_pct: float = DEFAULT_DAILY_LOSS_LIMIT_PCT
+    max_total_exposure_pct: float = DEFAULT_MAX_TOTAL_EXPOSURE_PCT
 
     @staticmethod
     def from_settings(settings: Settings | None = None) -> "RiskLimits":
@@ -79,6 +88,7 @@ class RiskLimits:
         return RiskLimits(
             max_position_pct=settings.risk_max_position_pct,
             daily_loss_limit_pct=settings.risk_daily_loss_limit_pct,
+            max_total_exposure_pct=settings.risk_max_total_exposure_pct,
         )
 
 
@@ -222,6 +232,27 @@ class RiskManager:
             )
 
         if decision.action == "BUY":
+            if account.stock_value is None or account.buying_power is None:
+                return reject(
+                    f"{decision.symbol} 보유 평가금액/주문가능금액을 확인하지 못해 매수 거부"
+                )
+
+            # Written as `not (a <= b)` so a NaN from a bad response rejects
+            # instead of slipping through every comparison.
+            max_total_exposure = account.total_equity * self._limits.max_total_exposure_pct
+            exposure_after = account.stock_value + order_value
+            if account.stock_value < 0 or not (exposure_after <= max_total_exposure):
+                return reject(
+                    f"매수 후 총 투자금액 {exposure_after:,.0f}원(현재 보유 평가 {account.stock_value:,.0f}원 "
+                    f"+ 이번 주문 {order_value:,.0f}원)이 총 투자 한도 {max_total_exposure:,.0f}원 "
+                    f"(총평가 {account.total_equity:,.0f}원의 {self._limits.max_total_exposure_pct:.0%})을 초과"
+                )
+
+            if not (order_value <= account.buying_power):
+                return reject(
+                    f"매수 금액 {order_value:,.0f}원이 주문가능금액 {account.buying_power:,.0f}원을 초과"
+                )
+
             if account.day_start_equity <= 0:
                 return reject(f"당일 시작 평가금액 값이 잘못됨 (day_start_equity={account.day_start_equity!r})")
             daily_pnl_pct = (account.total_equity - account.day_start_equity) / account.day_start_equity
@@ -232,6 +263,22 @@ class RiskManager:
                 )
 
         return RiskVerdict(approved=True, reason="한도 이내", decision=decision)
+
+    def max_buy_value(self, account: AccountState) -> float:
+        """Largest single BUY (won) that evaluate() would accept right now
+        -- the smallest of the position limit, the room left under the
+        total-exposure limit and the 주문가능금액. 0 when the exposure or
+        cash can't be verified (evaluate() rejects those BUYs too). Used to
+        tell the AI its real budget so it doesn't propose orders that are
+        sure to be rejected; evaluate() stays the actual gate."""
+        if account.stock_value is None or account.buying_power is None:
+            return 0.0
+        caps = (
+            account.total_equity * self._limits.max_position_pct,
+            account.total_equity * self._limits.max_total_exposure_pct - account.stock_value,
+            account.buying_power,
+        )
+        return max(0.0, min(caps))
 
     def mark_executed(self, decision_id: str) -> None:
         """Call only after broker.order_executor has actually submitted

@@ -113,7 +113,7 @@ def run_once(
         "avg_cost": account.avg_cost,
         "total_equity": account.total_equity,
         # Lets the AI size orders sensibly; risk.risk_manager still enforces it.
-        "max_buy_value": account.total_equity * get_settings().risk_max_position_pct,
+        "max_buy_value": risk.max_buy_value(account),
         "recent_trades": memory.recent_trades(symbol),
         **(context or {}),
     }

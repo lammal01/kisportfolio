@@ -52,7 +52,9 @@ SYSTEM_PROMPT = (
     "turned out (order status, fill, realized_pnl). Treat them as context "
     "only -- a past decision is not a reason to repeat it. "
     "max_buy_value is the most a single BUY may cost (quantity * price); "
-    "larger orders are rejected by an independent risk manager. "
+    "larger orders are rejected by an independent risk manager. It already "
+    "accounts for available cash and the total-investment limit, so when it "
+    "is below one share's price, a BUY is impossible -- do not propose one. "
     "Write every reason item in Korean (한국어), concise, keeping numbers "
     "and tickers as-is."
 )

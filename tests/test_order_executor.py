@@ -49,6 +49,8 @@ def _account(**overrides) -> AccountState:
         current_price=70_000.0,
         held_quantity=5,
         open_order_count=0,
+        stock_value=0.0,
+        buying_power=10_000_000.0,
     )
     defaults.update(overrides)
     return AccountState(**defaults)
@@ -248,9 +250,10 @@ def test_build_account_state_from_kis_responses():
             {"pdno": "005930", "hldg_qty": "4", "pchs_avg_pric": "68000.5"},
             {"pdno": "000660", "hldg_qty": "2", "pchs_avg_pric": "150000"},
         ],
-        "summary": {"tot_evlu_amt": "10000000"},
+        "summary": {"tot_evlu_amt": "10000000", "scts_evlu_amt": "7000000"},
     }
     client.get_current_price.return_value = {"stck_prpr": "70000"}
+    client.get_buying_power.return_value = {"ord_psbl_cash": "3000000"}
     client.get_daily_orders.return_value = [
         _order_row(odno="1", rmn_qty="1", tot_ccld_qty="0"),  # open, counts
         _order_row(odno="2"),  # filled
@@ -268,6 +271,8 @@ def test_build_account_state_from_kis_responses():
         held_quantity=4,
         open_order_count=1,
         avg_cost=68_000.5,
+        stock_value=7_000_000.0,
+        buying_power=3_000_000.0,
     )
 
 
@@ -506,3 +511,19 @@ def test_read_request_recovers_after_network_error(mock_get, paper_client):
         _get_response({"rt_cd": "0", "output": {"stck_prpr": "1"}}),
     ]
     assert paper_client.get_current_price("005930") == {"stck_prpr": "1"}
+
+
+def test_build_account_state_without_buying_power_still_builds_for_sells():
+    client = MagicMock(spec=KisClient)
+    client.get_balance.return_value = {
+        "holdings": [],
+        "summary": {"tot_evlu_amt": "10000000"},  # no scts_evlu_amt
+    }
+    client.get_current_price.return_value = {"stck_prpr": "70000"}
+    client.get_buying_power.return_value = {}  # no ord_psbl_cash
+    client.get_daily_orders.return_value = []
+
+    account = build_account_state("005930", client=client)
+
+    assert account.stock_value is None
+    assert account.buying_power is None

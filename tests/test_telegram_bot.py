@@ -179,7 +179,10 @@ def test_stop_is_persisted_and_seen_by_running_risk_manager(bot, memory):
     verdict = running.evaluate(
         Decision("BUY", "005930", 1, 0.9, ("x",)),
         "d1",
-        AccountState("005930", 10_000_000, 10_000_000, 70_000, 0, open_order_count=0),
+        AccountState(
+            "005930", 10_000_000, 10_000_000, 70_000, 0, open_order_count=0,
+            stock_value=0.0, buying_power=10_000_000.0,
+        ),
     )
     assert not verdict.approved and "비상 정지" in verdict.reason
 

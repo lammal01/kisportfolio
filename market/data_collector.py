@@ -55,6 +55,7 @@ def build_account_state(
     client = client or KisClient()
     balance = client.get_balance()
     price = client.get_current_price(symbol)
+    buying = client.get_buying_power(symbol)
     open_order_count = sum(
         1
         for row in client.get_daily_orders()
@@ -71,6 +72,15 @@ def build_account_state(
     holdings = [h for h in balance["holdings"] if h.get("pdno") == symbol]
     held_quantity = sum(int(number(h, "hldg_qty")) for h in holdings)
     avg_cost = number(holdings[0], "pchs_avg_pric") if held_quantity > 0 else None
+
+    # A missing/invalid value here only blocks BUYs (RiskManager rejects
+    # what it can't verify); it must not stop SELL decisions.
+    def optional_number(source: dict, key: str) -> float | None:
+        try:
+            return number(source, key)
+        except ValueError:
+            return None
+
     return AccountState(
         symbol=symbol,
         total_equity=total_equity,
@@ -79,4 +89,6 @@ def build_account_state(
         held_quantity=held_quantity,
         open_order_count=open_order_count,
         avg_cost=avg_cost,
+        stock_value=optional_number(balance["summary"], "scts_evlu_amt"),
+        buying_power=optional_number(buying, "ord_psbl_cash"),
     )
