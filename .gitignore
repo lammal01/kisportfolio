@@ -33,3 +33,10 @@ reports/
 .DS_Store
 .vscode/
 .idea/
+
+# Exported / personal data (trade history, account info)
+data/
+*.xlsx
+*.csv
+.env.*
+!.env.example
