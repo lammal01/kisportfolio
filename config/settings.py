@@ -75,6 +75,20 @@ class Settings:
     cycle_minutes: int = field(default_factory=lambda: int(os.getenv("CYCLE_MINUTES") or "10"))
     ai_daily_call_limit: int = field(default_factory=lambda: int(os.getenv("AI_DAILY_CALL_LIMIT") or "50"))
 
+    # market.ladder: rule-based scale-in (분할매수) and exits (손절/익절).
+    # Orders still go through the Risk Manager. "0" turns either off.
+    ladder_enabled: bool = field(default_factory=lambda: (os.getenv("LADDER_ENABLED") or "1") != "0")
+    ladder_budget_pct: float = field(default_factory=lambda: float(os.getenv("LADDER_BUDGET_PCT") or "0.05"))
+    ladder_max_plans: int = field(default_factory=lambda: int(os.getenv("LADDER_MAX_PLANS") or "8"))
+    exits_enabled: bool = field(default_factory=lambda: (os.getenv("EXITS_ENABLED") or "1") != "0")
+    exit_hard_stop_pct: float = field(default_factory=lambda: float(os.getenv("EXIT_HARD_STOP_PCT") or "0.10"))
+    exit_take_profit_pct: float = field(default_factory=lambda: float(os.getenv("EXIT_TAKE_PROFIT_PCT") or "0.04"))
+
+    # Temporary aggressive-strategy window (paper only): while today <= this
+    # date the AI prompt asks for profit-seeking decisions. Empty = off.
+    # Risk Manager limits are NOT affected -- tune those via RISK_* above.
+    aggressive_until: str | None = field(default_factory=lambda: os.getenv("AGGRESSIVE_UNTIL") or None)
+
     # memory.trade_memory SQLite file -- per machine, gitignored.
     trade_db_path: str = field(
         default_factory=lambda: os.getenv("TRADE_DB_PATH")

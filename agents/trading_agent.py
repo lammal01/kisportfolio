@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 
 import anthropic
 
@@ -64,6 +65,26 @@ class TradingAgentError(RuntimeError):
     """Raised when the Claude API call itself fails (network/auth/etc, not
     a validation error -- for those see models.decision.DecisionParseError)."""
 
+AGGRESSIVE_ADDENDUM = (
+    " [공격 모드: 모의투자 한정, 기간 한정] 이번 기간에는 수익 극대화가 목표다. "
+    "신호가 확인되면 HOLD보다 BUY/SELL을 우선 고려하고, 확신이 높으면 "
+    "max_buy_value에 가깝게 크게 매수해도 된다. 상승 추세·거래량 급증 종목을 "
+    "적극 추종하고, 현금을 놀리지 말며, 약세 종목은 빠르게 정리해 강한 종목으로 "
+    "옮겨라. 단 스냅샷에 없는 데이터를 지어내지 말고, max_buy_value 한도와 "
+    "리스크 매니저의 거절은 그대로 적용된다."
+)
+
+
+def _system_prompt(settings: Settings, today: date | None = None) -> str:
+    until = getattr(settings, "aggressive_until", None)
+    if until:
+        try:
+            if (today or date.today()) <= date.fromisoformat(until):
+                return SYSTEM_PROMPT + AGGRESSIVE_ADDENDUM
+        except ValueError:
+            pass  # malformed date -> stay on the default prompt
+    return SYSTEM_PROMPT
+
 
 class TradingAgent:
     def __init__(
@@ -79,6 +100,7 @@ class TradingAgent:
             )
         self._client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
         self._model = model or settings.anthropic_model
+        self._settings = settings
 
     def decide(self, symbol: str, market_snapshot: dict) -> Decision:
         """market_snapshot: whatever market.data_collector produced for
@@ -88,7 +110,7 @@ class TradingAgent:
             response = self._client.messages.create(
                 model=self._model,
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=_system_prompt(self._settings),
                 messages=[
                     {
                         "role": "user",

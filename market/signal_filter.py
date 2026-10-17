@@ -23,7 +23,7 @@ VOLUME_MIN_ELAPSED_MINUTES = 30  # too noisy right after the open
 RSI_OVERSOLD = 30.0
 RSI_OVERBOUGHT = 70.0
 HELD_REVIEW_MINUTES = 60  # held positions get looked at at least this often
-COOLDOWN_MINUTES = 30  # never ask about the same symbol more often than this
+COOLDOWN_MINUTES = 20  # never ask about the same symbol more often than this
 
 
 @dataclass(frozen=True)

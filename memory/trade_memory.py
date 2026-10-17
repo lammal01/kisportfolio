@@ -21,6 +21,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from config.settings import get_settings
+from market.ladder import LadderPlan
 from memory.database import connect
 from models.decision import Decision
 from models.order import OrderFill, OrderResult
@@ -207,6 +208,37 @@ class TradeMemory:
         )[0][0]
 
     # --- AI call accounting / signal filter state ---------------------------
+
+    # --- market.ladder --------------------------------------------------------
+
+    def save_ladder_plan(self, plan: LadderPlan) -> None:
+        self._write(
+            """INSERT INTO ladder_plans (symbol, trade_date, plan, updated_at) VALUES (?, ?, ?, ?)
+               ON CONFLICT(symbol, trade_date) DO UPDATE SET plan = excluded.plan, updated_at = excluded.updated_at""",
+            (plan.symbol, plan.trade_date, plan.to_json(), _now()),
+        )
+
+    def load_ladder_plan(self, symbol: str, trade_date: str) -> LadderPlan | None:
+        rows = self._read(
+            "SELECT plan FROM ladder_plans WHERE symbol = ? AND trade_date = ?", (symbol, trade_date)
+        )
+        return LadderPlan.from_json(rows[0]["plan"]) if rows else None
+
+    def ladder_plan_count(self, trade_date: str) -> int:
+        return self._read("SELECT COUNT(*) FROM ladder_plans WHERE trade_date = ?", (trade_date,))[0][0]
+
+    def count_decided_today(self, symbol: str, trade_date: str, action: str, tag: str) -> int:
+        """How many orders for decisions whose reason contains `tag`
+        (e.g. market.ladder.TAKE_PROFIT_TAG) went out for symbol that day.
+        Rejected orders don't count, so a rejected one is retried."""
+        day = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+        rows = self._read(
+            """SELECT COUNT(*) FROM decisions d JOIN orders o ON o.decision_id = d.decision_id
+               WHERE d.symbol = ? AND d.action = ? AND d.created_at LIKE ? AND d.reason LIKE ?
+               AND o.status NOT IN ('REJECTED_BY_RISK', 'REJECTED_BY_BROKER')""",
+            (symbol, action, f"{day}%", f"%{tag}%"),
+        )
+        return rows[0][0]
 
     def record_ai_call(self, symbol: str, ok: bool, triggers: list[str] | None = None) -> None:
         self._write(

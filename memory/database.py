@@ -95,6 +95,15 @@ CREATE TABLE IF NOT EXISTS ai_calls (
     triggers TEXT                      -- JSON list of signal_filter reasons
 );
 
+-- market.ladder plans: one per symbol per session (JSON LadderPlan).
+CREATE TABLE IF NOT EXISTS ladder_plans (
+    symbol TEXT NOT NULL,
+    trade_date TEXT NOT NULL,          -- YYYYMMDD, KST
+    plan TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (symbol, trade_date)
+);
+
 CREATE INDEX IF NOT EXISTS idx_decisions_symbol_created ON decisions(symbol, created_at);
 """
 

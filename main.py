@@ -32,11 +32,11 @@ from agents.trading_agent import TradingAgent, TradingAgentError
 from broker.kis_client import KisApiError, KisClient
 from broker.order_executor import OrderExecutor
 from config.settings import KisCredentialError, get_settings
-from market import indicators
+from market import indicators, ladder
 from market.data_collector import build_account_state
 from market.signal_filter import SignalFilter
 from memory.trade_memory import TradeMemory
-from models.decision import DecisionParseError
+from models.decision import Decision, DecisionParseError
 from models.order import OrderFill, OrderFillParseError, OrderResult
 from risk.risk_manager import RiskManager
 from telegram.labels import ACTION, FILL_STATUS, ORDER_STATUS, RECONCILIATION, label
@@ -79,13 +79,18 @@ def format_fill(fill: OrderFill | None) -> str:
 
 
 def run_once(
-    symbol: str, memory: TradeMemory | None = None, context: dict | None = None
+    symbol: str,
+    memory: TradeMemory | None = None,
+    context: dict | None = None,
+    rule_decision: Decision | None = None,
 ) -> OrderResult | None:
     """Returns the OrderResult, or None when no order was attempted
     (emergency stop engaged, paused via Telegram, or no valid AI decision).
 
     context: extra snapshot fields from the loop (indicators, the
-    signal_filter triggers that caused this call)."""
+    signal_filter triggers that caused this call).
+    rule_decision: a market.ladder decision (분할매수/손절/익절) to submit
+    instead of asking the AI -- same Risk Manager path, no AI call counted."""
     memory = memory or TradeMemory()
     client = KisClient()
     risk = RiskManager(store=memory)
@@ -119,15 +124,17 @@ def run_once(
     }
     triggers = list((context or {}).get("signal_triggers", []))
 
-    try:
-        decision = TradingAgent().decide(symbol, snapshot)
-    except (TradingAgentError, DecisionParseError) as exc:
-        memory.record_ai_call(symbol, ok=False, triggers=triggers)
-        logger.error("no valid AI decision for %s: %s", symbol, exc)
-        _notify(f"[판단 실패] {symbol}: AI 판단을 받지 못해 주문 없음 -- {exc}")
-        return None
-
-    memory.record_ai_call(symbol, ok=True, triggers=triggers)
+    if rule_decision is not None:
+        decision = rule_decision
+    else:
+        try:
+            decision = TradingAgent().decide(symbol, snapshot)
+        except (TradingAgentError, DecisionParseError) as exc:
+            memory.record_ai_call(symbol, ok=False, triggers=triggers)
+            logger.error("no valid AI decision for %s: %s", symbol, exc)
+            _notify(f"[판단 실패] {symbol}: AI 판단을 받지 못해 주문 없음 -- {exc}")
+            return None
+        memory.record_ai_call(symbol, ok=True, triggers=triggers)
     decision_id = uuid.uuid4().hex
     # Recorded before submitting: if this write fails, no order goes out.
     memory.record_decision(decision_id, decision, snapshot)
@@ -164,7 +171,8 @@ def run_once(
         message += "\n비상 정지 걸림 -- 계좌 확인 전까지 모든 주문 차단"
     if triggers:
         message += "\n호출 이유: " + ", ".join(triggers)
-    message += f"\n\nAI 판단 (확신도 {decision.confidence:.0%}):\n" + "\n".join(f"- {r}" for r in decision.reason)
+    header = "규칙 판단:" if rule_decision is not None else f"AI 판단 (확신도 {decision.confidence:.0%}):"
+    message += f"\n\n{header}\n" + "\n".join(f"- {r}" for r in decision.reason)
     print(message)
     _notify(message)
     return result
@@ -192,6 +200,14 @@ SUMMARY_AFTER = dtime(15, 35)
 # call it a holiday once this much of the session has passed.
 HOLIDAY_CHECK_AFTER = dtime(9, 10)
 ERROR_NOTICE_INTERVAL = timedelta(minutes=30)
+
+
+def _optional_float(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _kst_now() -> datetime:
@@ -283,16 +299,22 @@ class PaperTradingLoop:
 
         today = now.strftime("%Y%m%d")
         client = self._kis()
-        held = {h.get("pdno"): int(h.get("hldg_qty", "0")) for h in client.get_balance()["holdings"]}
+        balance = client.get_balance()
+        held = {h.get("pdno"): int(h.get("hldg_qty", "0")) for h in balance["holdings"]}
+        avg_costs = {h.get("pdno"): _optional_float(h.get("pchs_avg_pric")) for h in balance["holdings"]}
+        total_equity = _optional_float(balance.get("summary", {}).get("tot_evlu_amt"))
         for symbol in self._settings.watchlist:
             try:
-                ind = indicators.compute(client.get_daily_prices(symbol), now)
+                rows = client.get_daily_prices(symbol)
+                ind = indicators.compute(rows, now)
                 if not ind.is_trading_day:
                     if now.time() >= HOLIDAY_CHECK_AFTER:
                         self._holiday = today
                         self._notify(f"[휴장일] {today} -- 오늘은 매매하지 않습니다.")
                         return
                     continue
+                if self._run_rules(symbol, rows, ind, held.get(symbol, 0), avg_costs.get(symbol), total_equity, now):
+                    continue  # a rule order went out -- no AI call for this symbol this cycle
                 check = self._filter.check(symbol, ind, held.get(symbol, 0), now)
                 logger.info(
                     "%s price=%s triggers=%s call_ai=%s blocked=%s",
@@ -310,6 +332,86 @@ class PaperTradingLoop:
             except Exception as exc:
                 logger.exception("cycle failed for %s", symbol)
                 self._error_notice(f"{symbol} 처리 실패: {exc!r}")
+
+    def _run_rules(
+        self,
+        symbol: str,
+        rows: list[dict],
+        ind,
+        held: int,
+        avg_cost: float | None,
+        total_equity: float | None,
+        now: datetime,
+    ) -> bool:
+        """market.ladder exits (손절/익절) then scale-in (분할매수). Returns
+        True if an order was attempted. A failure here is logged and the
+        symbol falls back to the normal AI path -- it never skips it."""
+        s = self._settings
+        if not (s.exits_enabled or s.ladder_enabled):
+            return False
+        today = now.strftime("%Y%m%d")
+        try:
+            plan = self._memory.load_ladder_plan(symbol, today)
+            if s.exits_enabled:
+                decision = ladder.exit_decision(
+                    symbol, ind.price, held, avg_cost, plan,
+                    s.exit_hard_stop_pct, s.exit_take_profit_pct,
+                    self._memory.count_decided_today(symbol, today, "SELL", ladder.TAKE_PROFIT_TAG),
+                )
+                if decision is not None:
+                    result = self._submit_rule(symbol, ind, decision)
+                    if result is not None and result.submitted and plan is not None and decision.reason[0].startswith(ladder.STOP_TAG):
+                        plan.status = "stopped"  # no more buys on a plan whose estimate failed
+                        self._memory.save_ladder_plan(plan)
+                    return True
+            if not s.ladder_enabled:
+                return False
+            if plan is None:
+                plan = self._new_plan(symbol, rows, ind, held, total_equity, now)
+                if plan is None:
+                    return False
+            due = ladder.due_levels(plan, ind.price)
+            decision = ladder.ladder_decision(plan, due, ind.price) if due else None
+            if decision is None:
+                return False
+            result = self._submit_rule(symbol, ind, decision)
+            if result is not None and result.submitted:
+                for i in due:
+                    plan.levels[i].filled = True
+                self._memory.save_ladder_plan(plan)
+            return True
+        except Exception as exc:
+            logger.exception("ladder/exit rules failed for %s", symbol)
+            self._error_notice(f"{symbol} 분할매수/손절 규칙 실패 (AI 판단은 계속): {exc!r}")
+            return False
+
+    def _new_plan(self, symbol, rows, ind, held, total_equity, now):
+        s = self._settings
+        if not total_equity or not ladder.should_plan(ind, now.time()):
+            return None
+        today = now.strftime("%Y%m%d")
+        if self._memory.ladder_plan_count(today) >= s.ladder_max_plans:
+            return None
+        budget = total_equity * s.ladder_budget_pct
+        if held * ind.price >= budget:
+            return None  # already holding at least a full plan's worth
+        est = ladder.estimate_drop(rows, ind.price)
+        if est is None:
+            return None
+        plan = ladder.build_plan(symbol, today, ind.price, est, budget)
+        self._memory.save_ladder_plan(plan)
+        logger.info("ladder plan %s: %s", symbol, plan.describe().replace("\n", " / "))
+        self._notify(f"[분할매수 계획] {symbol}\n{plan.describe()}")
+        return plan
+
+    def _submit_rule(self, symbol: str, ind, decision: Decision) -> OrderResult | None:
+        logger.info("rule decision %s: %s %s주 -- %s", symbol, decision.action, decision.quantity, decision.reason[0])
+        return self._run_once(
+            symbol,
+            memory=self._memory,
+            context={"indicators": ind.as_dict(), "signal_triggers": [decision.reason[0]]},
+            rule_decision=decision,
+        )
 
     def _error_notice(self, text: str) -> None:
         now = self._now()
